@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Programa de Alertas{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body>
+<header class="site-header">
+    <div class="site-header-inner">
+        <a class="brand" href="/">
+            <span class="brand-mark">PA</span>
+            <span>
+                <strong>Programa de Alertas</strong>
+                <small>Prototipo institucional</small>
+            </span>
+        </a>
+        <nav aria-label="Navegación principal">
+            <a href="/" {% if active_page == 'alert' %}class="active"{% endif %}>Nueva alerta</a>
+            <a href="/recipients" {% if active_page == 'recipients' %}class="active"{% endif %}>Destinatarios</a>
+            <a href="/history" {% if active_page == 'history' %}class="active"{% endif %}>Simulaciones</a>
+        </nav>
+        <span class="mode-badge">MODO PRUEBA</span>
+    </div>
+</header>
+
+<main class="page-shell">
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>

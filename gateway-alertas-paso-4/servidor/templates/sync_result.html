@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Resultado de sincronización | Programa de Alertas{% endblock %}
+
+{% block content %}
+<section class="card wide-card">
+    <p class="eyebrow">Google Sheets → SQLite</p>
+    <h1>Resultado de la sincronización</h1>
+
+    {% if fatal_error %}
+    <div class="error" role="alert">{{ fatal_error }}</div>
+    <p>
+        La copia local anterior se conservó sin cambios. Corregí la configuración
+        o la planilla y volvé a intentarlo.
+    </p>
+    {% else %}
+    <div class="success">
+        La lectura terminó y los registros válidos fueron guardados localmente.
+        Ningún SMS fue enviado.
+    </div>
+
+    <div class="metrics-grid">
+        <div><span>Filas leídas</span><strong>{{ summary.rows_read }}</strong></div>
+        <div><span>Aceptadas</span><strong>{{ summary.accepted }}</strong></div>
+        <div><span>Rechazadas</span><strong>{{ summary.rejected }}</strong></div>
+        <div><span>Nuevas</span><strong>{{ summary.inserted }}</strong></div>
+        <div><span>Actualizadas</span><strong>{{ summary.updated }}</strong></div>
+        <div><span>Sin cambios</span><strong>{{ summary.unchanged }}</strong></div>
+        <div><span>Desactivadas</span><strong>{{ summary.deactivated }}</strong></div>
+        <div><span>SMS activos</span><strong>{{ summary.active_sms_recipients }}</strong></div>
+    </div>
+
+    {% if validation.errors %}
+    <h2>Filas rechazadas</h2>
+    <div class="warning">
+        Estas filas no reemplazaron datos válidos anteriores. Corregilas en la
+        planilla y sincronizá nuevamente.
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Fila</th>
+                    <th>Referencia</th>
+                    <th>Problemas</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for item in validation.errors %}
+                <tr>
+                    <td>{{ item.row_number }}</td>
+                    <td>{{ item.name_hint }}</td>
+                    <td>
+                        <ul class="compact-list">
+                        {% for message in item.messages %}
+                            <li>{{ message }}</li>
+                        {% endfor %}
+                        </ul>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <div class="action-row">
+        <a class="secondary-button" href="/recipients">Volver a destinatarios</a>
+        {% if not fatal_error %}
+        <a class="primary-link-button" href="/">Crear alerta de prueba</a>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Destinatarios | Programa de Alertas{% endblock %}
+
+{% block content %}
+<section class="card wide-card">
+    <div class="header-row">
+        <div>
+            <p class="eyebrow">Google Sheets → SQLite</p>
+            <h1>Destinatarios</h1>
+            <p class="lead">
+                La planilla se consulta en modo lectura y se conserva una copia local validada.
+            </p>
+        </div>
+        <form action="/recipients/sync" method="post" class="inline-form">
+            <button type="submit">Sincronizar ahora</button>
+        </form>
+    </div>
+
+    <div class="config-grid">
+        <div>
+            <span>ID de planilla</span>
+            <strong>{{ "Configurado" if sheet_configured else "Falta en .env" }}</strong>
+        </div>
+        <div>
+            <span>Rango</span>
+            <strong class="mono">{{ sheet_range }}</strong>
+        </div>
+        <div>
+            <span>Credenciales</span>
+            <strong>{{ "Encontradas" if credentials_ready else "No disponibles" }}</strong>
+        </div>
+    </div>
+
+    {% if service_account_email %}
+    <div class="notice">
+        La planilla debe estar compartida como <strong>Lector</strong> con:
+        <code>{{ service_account_email }}</code>
+    </div>
+    {% endif %}
+
+    {% if credentials_error %}
+    <div class="error">{{ credentials_error }}</div>
+    {% endif %}
+
+    {% if last_sync %}
+    <div class="compact-status">
+        <span>Última sincronización</span>
+        <strong>{{ last_sync.completed_at }}</strong>
+        <span class="status-pill {{ last_sync.status }}">{{ last_sync.status }}</span>
+    </div>
+    {% endif %}
+
+    <h2>Copia local</h2>
+    {% if recipients %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Fila</th>
+                    <th>Nombre</th>
+                    <th>Teléfono</th>
+                    <th>Correo</th>
+                    <th>Edificio</th>
+                    <th>Oficina</th>
+                    <th>Activo</th>
+                    <th>SMS</th>
+                    <th>Correo</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for recipient in recipients %}
+                <tr class="{% if not recipient.active %}inactive-row{% endif %}">
+                    <td>{{ recipient.sheet_row }}</td>
+                    <td>{{ recipient.name }}</td>
+                    <td class="mono">{{ recipient.phone_masked }}</td>
+                    <td>{{ recipient.email_masked or "—" }}</td>
+                    <td>{{ buildings[recipient.building_id].label }}</td>
+                    <td>{{ recipient.office or "Sin oficina" }}</td>
+                    <td><span class="boolean {{ 'yes' if recipient.active else 'no' }}">{{ "Sí" if recipient.active else "No" }}</span></td>
+                    <td><span class="boolean {{ 'yes' if recipient.sms_enabled else 'no' }}">{{ "Sí" if recipient.sms_enabled else "No" }}</span></td>
+                    <td><span class="boolean {{ 'yes' if recipient.email_enabled else 'no' }}">{{ "Sí" if recipient.email_enabled else "No" }}</span></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="warning">
+        La base local está vacía. Revisá la configuración y presioná
+        <strong>Sincronizar ahora</strong>.
+    </div>
+    {% endif %}
+
+    <details>
+        <summary>Formato esperado de la primera fila</summary>
+        <pre>id | nombre | telefono | correo | edificio | activo | sms | correo_habilitado | oficina</pre>
+        <p class="muted">
+            El teléfono debe ser un celular argentino como +5493764XXXXXX,
+            sin 0 ni 15. Las columnas activo, sms y correo_habilitado usan SI o NO.
+        </p>
+    </details>
+</section>
+{% endblock %}
