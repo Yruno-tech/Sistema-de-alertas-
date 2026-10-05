@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Simulación registrada | Programa de Alertas{% endblock %}
+
+{% block content %}
+<section class="card">
+    <div class="success">
+        <strong>Simulación registrada correctamente.</strong>
+        No se envió ningún SMS ni correo electrónico.
+    </div>
+
+    <p class="eyebrow">Registro #{{ alert.id }}</p>
+    <h1>{{ preview.alert_label }}</h1>
+    <p class="lead">{{ preview.building_label }}</p>
+
+    <div class="message-preview">{{ alert.message }}</div>
+
+    <div class="metrics">
+        <span><strong>{{ alert.recipient_count }}</strong> destinatario(s)</span>
+        <span><strong>{{ alert.segments }}</strong> segmento por persona</span>
+        <span><strong>{{ alert.status }}</strong></span>
+    </div>
+
+    <h2>Entregas simuladas</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Destinatario</th>
+                    <th>Teléfono</th>
+                    <th>Canal</th>
+                    <th>Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for delivery in deliveries %}
+                <tr>
+                    <td>{{ delivery.recipient_name_snapshot }}</td>
+                    <td class="mono">{{ delivery.destination_masked }}</td>
+                    <td>{{ delivery.channel }}</td>
+                    <td><span class="status-pill success">{{ delivery.status }}</span></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="action-row">
+        <a class="secondary-button" href="/">Nueva alerta</a>
+        <a class="primary-link-button" href="/history">Ver simulaciones</a>
+    </div>
+</section>
+{% endblock %}

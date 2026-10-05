@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Confirmar SMS de prueba{% endblock %}
+{% block content %}
+<section class="card">
+  <p class="eyebrow">REVISIÓN ANTES DEL ENVÍO</p><h1>{{ batch.jobs|length }} SMS reales de prueba</h1>
+  <p>{{ buildings[batch.building_id].label }} · {{ batch.office or 'Todas las oficinas del edificio' }}</p>
+  <blockquote>{{ batch.message }}</blockquote><p>{{ batch.message|length }}/160 caracteres · 1 segmento por destinatario</p>
+  <div class="table-wrapper"><table><thead><tr><th>Destinatario</th><th>Teléfono</th><th>Oficina</th></tr></thead>
+    <tbody>{% for job in batch.jobs %}<tr><td>{{ job.recipient_name }}</td><td>{{ job.phone_masked }}</td><td>{{ job.office or 'Sin oficina' }}</td></tr>{% endfor %}</tbody></table></div>
+  <p>Se utilizará la SIM seleccionada en el gateway y se consumirá saldo o SMS del plan. Esta vista previa vence en 5 minutos.</p>
+  <form method="post" action="/gateway/batches/{{ batch.id }}/confirm">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label for="confirmation">Escribí CONFIRMAR para autorizar este envío</label>
+    <input id="confirmation" name="confirmation" required pattern="CONFIRMAR" autocomplete="off">
+    <button type="submit">Confirmar y poner SMS en cola</button>
+    <a class="button-secondary" href="/gateway">Volver</a>
+  </form>
+</section>
+{% endblock %}

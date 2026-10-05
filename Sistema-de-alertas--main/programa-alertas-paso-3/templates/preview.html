@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Vista previa | Programa de Alertas{% endblock %}
+
+{% block content %}
+<section class="card">
+    <div class="header-row">
+        <div>
+            <p class="eyebrow">Revisión obligatoria</p>
+            <h1>Vista previa de la simulación</h1>
+            <p class="lead">El servidor volvió a validar el mensaje y los destinatarios.</p>
+        </div>
+    </div>
+
+    {% if error %}
+    <div class="error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    <div class="summary-grid">
+        <div>
+            <span>Edificio</span>
+            <strong>{{ preview.building_label }}</strong>
+        </div>
+        <div>
+            <span>Tipo de alerta</span>
+            <strong>{{ preview.alert_label }}</strong>
+        </div>
+        {% if preview.cause_label %}
+        <div>
+            <span>Causa</span>
+            <strong>{{ preview.cause_label }}</strong>
+        </div>
+        {% endif %}
+        <div>
+            <span>Destinatarios SMS</span>
+            <strong>{{ recipients|length }}</strong>
+        </div>
+    </div>
+
+    <h2>Mensaje SMS</h2>
+    <div class="message-preview">{{ preview.message }}</div>
+
+    <div class="metrics">
+        <span><strong>{{ preview.characters }}</strong>/160 caracteres</span>
+        <span><strong>{{ preview.remaining }}</strong> disponibles</span>
+        <span><strong>{{ preview.segments }}</strong> segmento</span>
+        <span>
+            <strong>{{ (preview.segments * recipients|length) }}</strong>
+            SMS simulados
+        </span>
+    </div>
+
+    <h2>Destinatarios locales</h2>
+    {% if recipients %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Nombre</th>
+                    <th>Teléfono</th>
+                    <th>Correo cargado</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for recipient in recipients %}
+                <tr>
+                    <td>{{ recipient.name }}</td>
+                    <td class="mono">{{ recipient.phone_masked }}</td>
+                    <td>
+                        {% if recipient.email %}
+                            Sí{% if recipient.email_enabled %}, habilitado{% endif %}
+                        {% else %}
+                            No
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="warning">
+        No hay destinatarios activos con SMS habilitado para este edificio.
+        <a href="/recipients">Revisar destinatarios</a>.
+    </div>
+    {% endif %}
+
+    {% if recipients|length > recipient_limit %}
+    <div class="error">
+        El límite de prueba es {{ recipient_limit }}, pero este edificio tiene
+        {{ recipients|length }} destinatarios. La simulación está bloqueada.
+    </div>
+    {% endif %}
+
+    {% if last_sync %}
+    <p class="muted">
+        Datos tomados de la copia SQLite sincronizada el {{ last_sync.completed_at }}.
+    </p>
+    {% endif %}
+
+    <div class="notice">
+        La acción siguiente <strong>no contactará a ninguna persona</strong>.
+        Solo guardará la alerta y una entrega simulada por destinatario.
+    </div>
+
+    <div class="action-row">
+        <a class="secondary-button" href="/">Volver y modificar</a>
+
+        {% if can_simulate %}
+        <form action="/simulate" method="post" class="confirmation-form">
+            <input type="hidden" name="building_id" value="{{ building_id }}">
+            <input type="hidden" name="alert_type" value="{{ alert_type }}">
+            <input type="hidden" name="technical_cause" value="{{ technical_cause }}">
+            <input type="hidden" name="other_description" value="{{ other_description }}">
+
+            <label class="checkbox-row">
+                <input type="checkbox" name="confirm_simulation" value="yes" required>
+                Confirmo que comprendo que esta operación es una simulación local.
+            </label>
+            <button type="submit">Registrar simulación</button>
+        </form>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

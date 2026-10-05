@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Nueva alerta | Programa de Alertas{% endblock %}
+
+{% block content %}
+<section class="card">
+    <div class="header-row">
+        <div>
+            <p class="eyebrow">Paso 3</p>
+            <h1>Generar alerta de prueba</h1>
+            <p class="lead">
+                El mensaje se construye con destinatarios sincronizados desde Google Sheets.
+            </p>
+        </div>
+    </div>
+
+    <div class="notice">
+        En esta etapa el sistema <strong>no envía SMS</strong>. La confirmación solamente
+        crea un registro local marcado como <strong>SIMULATED</strong>.
+    </div>
+
+    {% if last_sync %}
+    <div class="compact-status">
+        <span>Última sincronización</span>
+        <strong>{{ last_sync.completed_at }}</strong>
+        <span class="status-pill {{ last_sync.status }}">{{ last_sync.status }}</span>
+    </div>
+    {% else %}
+    <div class="warning">
+        Todavía no hay destinatarios locales.
+        <a href="/recipients">Configurá y sincronizá Google Sheets</a>.
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div class="error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    <form action="/preview" method="post" id="alert-form">
+        <label for="building_id">Edificio</label>
+        <select id="building_id" name="building_id" required>
+            <option value="">Seleccionar...</option>
+            {% for current_id, building in buildings.items() %}
+            <option value="{{ current_id }}"
+                {% if selected.get('building_id') == current_id %}selected{% endif %}>
+                {{ building.label }} — {{ recipient_counts.get(current_id, 0) }} destinatario(s)
+            </option>
+            {% endfor %}
+        </select>
+
+        <label for="alert_type">Tipo de alerta</label>
+        <select id="alert_type" name="alert_type" required>
+            <option value="">Seleccionar...</option>
+            {% for type_id, type_label in alert_types.items() %}
+            <option value="{{ type_id }}"
+                {% if selected.get('alert_type') == type_id %}selected{% endif %}>
+                {{ type_label }}
+            </option>
+            {% endfor %}
+        </select>
+
+        <div id="technical-fields" hidden>
+            <label for="technical_cause">Causa del error técnico</label>
+            <select id="technical_cause" name="technical_cause">
+                <option value="">Seleccionar...</option>
+                {% for cause_id, cause in technical_causes.items() %}
+                <option value="{{ cause_id }}"
+                    {% if selected.get('technical_cause') == cause_id %}selected{% endif %}>
+                    {{ cause.label }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div id="other-fields" hidden>
+            <label for="other_description">Descripción breve</label>
+            <textarea
+                id="other_description"
+                name="other_description"
+                rows="3"
+                maxlength="50"
+                placeholder="Ej.: sensor del segundo piso fuera de servicio"
+            >{{ selected.get('other_description', '') }}</textarea>
+            <div class="field-help">
+                Máximo: 50 caracteres. Se convertirá a texto compatible con SMS.
+                <span id="other-counter">0/50</span>
+            </div>
+        </div>
+
+        <button type="submit">Generar vista previa</button>
+    </form>
+</section>
+
+<script>
+    const alertType = document.getElementById("alert_type");
+    const technicalFields = document.getElementById("technical-fields");
+    const technicalCause = document.getElementById("technical_cause");
+    const otherFields = document.getElementById("other-fields");
+    const otherDescription = document.getElementById("other_description");
+    const otherCounter = document.getElementById("other-counter");
+
+    function updateConditionalFields() {
+        const isTechnical = alertType.value === "technical";
+        technicalFields.hidden = !isTechnical;
+        technicalCause.required = isTechnical;
+
+        const isOther = isTechnical && technicalCause.value === "other";
+        otherFields.hidden = !isOther;
+        otherDescription.required = isOther;
+    }
+
+    function updateCounter() {
+        otherCounter.textContent = `${otherDescription.value.length}/50`;
+    }
+
+    alertType.addEventListener("change", updateConditionalFields);
+    technicalCause.addEventListener("change", updateConditionalFields);
+    otherDescription.addEventListener("input", updateCounter);
+
+    updateConditionalFields();
+    updateCounter();
+</script>
+{% endblock %}

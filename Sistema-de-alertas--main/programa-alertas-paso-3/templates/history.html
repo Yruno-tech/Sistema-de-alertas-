@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Simulaciones | Programa de Alertas{% endblock %}
+
+{% block content %}
+<section class="card wide-card">
+    <p class="eyebrow">Auditoría local</p>
+    <h1>Simulaciones registradas</h1>
+    <p class="lead">
+        Estos registros permiten comprobar el flujo sin contactar a los destinatarios.
+    </p>
+
+    {% if alerts %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Fecha</th>
+                    <th>Edificio</th>
+                    <th>Tipo</th>
+                    <th>Destinatarios</th>
+                    <th>Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for alert in alerts %}
+                <tr>
+                    <td>#{{ alert.id }}</td>
+                    <td>{{ alert.created_at }}</td>
+                    <td>{{ buildings[alert.building_id].label }}</td>
+                    <td>{{ alert_types[alert.alert_type] }}</td>
+                    <td>{{ alert.delivery_count }}</td>
+                    <td><span class="status-pill success">{{ alert.status }}</span></td>
+                </tr>
+                <tr class="message-row">
+                    <td colspan="6">{{ alert.message }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="notice">
+        Todavía no hay simulaciones. Sincronizá destinatarios, creá una alerta
+        y registrá la primera prueba.
+    </div>
+    {% endif %}
+</section>
+{% endblock %}
