@@ -1,13 +1,13 @@
-"""Run locally by the operator. Generates no SMS and preserves Google credentials."""
+"""Automatic local configuration. No phone list and no credential files to copy."""
 from __future__ import annotations
 
 import argparse
-import hashlib
 import ipaddress
 import json
+import os
 import secrets
-import sqlite3
-import time
+import shutil
+import socket
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,86 +17,98 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from gateway_config import BASE_DIR, config_path
-from recipient_validation import normalize_argentina_mobile
+from gateway_config import BASE_DIR
 
 
-def private_write(path, data):
+def is_lan_ip(value):
+    try:
+        address = ipaddress.ip_address(value)
+        return address.version == 4 and any(address in ipaddress.ip_network(n) for n in
+            ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
+    except ValueError:
+        return False
+
+
+def detect_lan_ip():
+    candidates = []
+    # UDP connect selects a local route; it does not send a datagram.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(('192.0.2.1', 80))
+            candidates.append(sock.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        candidates.extend(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    return next((ip for ip in candidates if is_lan_ip(ip)), None)
+
+
+def private_write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as out:
-        out.write(data)
-    path.chmod(0o600)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(text, encoding='utf-8')
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
 
 
-def create_configuration(ip, numbers, base=BASE_DIR):
-    address=ipaddress.ip_address(ip)
-    networks=[ipaddress.ip_network(n) for n in ("10.0.0.0/8","172.16.0.0/12","192.168.0.0/16")]
-    if not any(address in n for n in networks):
-        raise ValueError("Ingresá la IPv4 de la red local de la computadora")
-    allowed=sorted(set(normalize_argentina_mobile(n) for n in numbers))
-    if not 1 <= len(allowed) <= 3:
-        raise ValueError("Se requieren entre 1 y 3 celulares autorizados")
-    cred=base / "credentials"
-    path=cred / "gateway-config.json"
-    pairing=base / "emparejar-gateway.json"
-    for existing in (path,pairing,cred/"gateway-server.pem",cred/"gateway-server.key"):
-        if existing.exists():
-            raise ValueError(f"Ya existe {existing.name}. Conservá la configuración o mové esos cuatro archivos para renovar y volver a emparejar.")
-    now=datetime.now(timezone.utc)
-    expires=now+timedelta(days=30)
-    key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
-    name=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,"Gateway local de pruebas")])
-    cert=(x509.CertificateBuilder().subject_name(name).issuer_name(name)
-          .public_key(key.public_key()).serial_number(x509.random_serial_number())
-          .not_valid_before(now-timedelta(minutes=5)).not_valid_after(expires)
-          .add_extension(x509.SubjectAlternativeName([x509.IPAddress(address)]),critical=False)
-          .add_extension(x509.BasicConstraints(ca=True,path_length=0),critical=True)
-          .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),critical=False)
-          .sign(key,hashes.SHA256()))
-    pem=cert.public_bytes(serialization.Encoding.PEM).decode()
-    secret=secrets.token_urlsafe(32)
-    server_id=str(uuid.uuid4())
-    config={"version":1,"mode":"test","server_id":server_id,"ip":ip,
-            "token_hash":hashlib.sha256(secret.encode()).hexdigest(),
-            "csrf":secrets.token_urlsafe(32),"allowed_numbers":allowed,
-            "expires_at":expires.timestamp()}
-    phone={"version":1,"mode":"test","serverId":server_id,
-           "url":f"https://{ip}:8443","token":secret,"certificatePem":pem,
-           "allowedNumbers":allowed,"expiresAt":expires.timestamp()}
-    private_write(cred/"gateway-server.key", key.private_bytes(serialization.Encoding.PEM,
-                  serialization.PrivateFormat.PKCS8,serialization.NoEncryption()).decode())
-    private_write(cred/"gateway-server.pem",pem)
-    private_write(path,json.dumps(config,indent=2))
-    private_write(pairing,json.dumps(phone,indent=2))
-    return pairing
+def create_configuration(ip, numbers=None, base=BASE_DIR):
+    if not is_lan_ip(ip):
+        raise ValueError('Indicá la IPv4 privada de la PC, por ejemplo 192.168.1.50')
+    cred = Path(base) / 'credentials'
+    path = cred / 'gateway-config.json'
+    old = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    if old and old.get('version') != 2:
+        shutil.copy2(path, cred / 'gateway-config-anterior.json')
+    pem_path, key_path = cred / 'gateway-server.pem', cred / 'gateway-server.key'
+    now = datetime.now(timezone.utc)
+    cert = None
+    try:
+        candidate = x509.load_pem_x509_certificate(pem_path.read_bytes())
+        private_key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+        ips = candidate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.IPAddress)
+        if (ipaddress.ip_address(ip) in ips and candidate.not_valid_after_utc > now+timedelta(days=7)
+                and candidate.public_key().public_numbers() == private_key.public_key().public_numbers()):
+            cert = candidate
+    except (OSError, ValueError, x509.ExtensionNotFound):
+        pass
+    if cert is None:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'Gateway local de alertas')])
+        cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now-timedelta(minutes=5))
+            .not_valid_after(now+timedelta(days=1095))
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(ip))]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .sign(key, hashes.SHA256()))
+        private_write(key_path, key.private_bytes(serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode())
+        private_write(pem_path, cert.public_bytes(serialization.Encoding.PEM).decode())
+    data = {'version': 2, 'mode': 'test', 'server_id': old.get('server_id', str(uuid.uuid4())),
+            'ip': ip, 'csrf': old.get('csrf', secrets.token_urlsafe(32)),
+            'pairing_key': old.get('pairing_key', secrets.token_urlsafe(32)),
+            'certificate_file': str(pem_path.resolve()), 'key_file': str(key_path.resolve()),
+            'expires_at': cert.not_valid_after_utc.timestamp()}
+    private_write(path, json.dumps(data, indent=2))
+    return data
 
 
-def backup_database():
-    from config import settings
-    if settings.database_path.exists():
-        stamp=datetime.now().strftime("%Y%m%d-%H%M%S")
-        target=settings.database_path.with_name(f"alerts-before-gateway-{stamp}.db")
-        with sqlite3.connect(settings.database_path) as source, sqlite3.connect(target) as dest:
-            source.backup(dest)
-        print(f"Copia de respaldo: {target}")
+def ensure_configuration(ip=None):
+    ip = ip or os.getenv('GATEWAY_IP') or detect_lan_ip()
+    if not ip:
+        raise RuntimeError('No se pudo detectar la IP. Ejecutá iniciar_gateway.py --ip IPv4_DE_LA_PC')
+    return create_configuration(ip)
 
 
 def main():
-    parser=argparse.ArgumentParser(description="Emparejamiento local sin enviar SMS")
-    parser.add_argument("--ip")
-    parser.add_argument("--numbers",help="1 a 3 celulares separados por coma")
-    args=parser.parse_args()
-    print("Consultá la IPv4 del adaptador Wi-Fi con ipconfig. No uses la IP del celular.")
-    ip=args.ip or input("IPv4 de esta computadora: ").strip()
-    numbers=(args.numbers or input("Celulares autorizados (+549..., separados por coma): ")).split(",")
-    pairing=create_configuration(ip,numbers)
-    backup_database()
-    print(f"Listo. Copiá por USB al teléfono: {pairing}")
-    print("Este archivo permite acceder al gateway: guardalo en privado y quitá la copia de Descargas después de importarla.")
-    print("Validez: 30 días. Conservá las credenciales de Google sin modificaciones.")
-    print("Revisá GOOGLE_SHEETS_RANGE en .env: si oficina es la columna I, usá DESTINATARIOS!A1:I.")
-    print("Iniciá con: python iniciar_gateway.py")
+    parser = argparse.ArgumentParser(description='Configurar el gateway para emparejar por QR')
+    parser.add_argument('--ip')
+    args = parser.parse_args()
+    config = ensure_configuration(args.ip)
+    print(f"Gateway configurado en {config['ip']}. No hace falta copiar archivos al celular.")
+    print('Ejecutá python iniciar_gateway.py y pulsá Conectar celular en el panel.')
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__': main()

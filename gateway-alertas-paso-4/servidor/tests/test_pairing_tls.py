@@ -9,7 +9,7 @@ from configurar_gateway import create_configuration
 
 def test_generated_certificate_is_trusted_only_for_the_configured_ip(tmp_path):
     create_configuration('192.168.1.5', ['+5493764000001'], tmp_path)
-    config = json.loads((tmp_path / 'emparejar-gateway.json').read_text())
+    config = {'certificatePem':(tmp_path/'credentials/gateway-server.pem').read_text()}
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_context.load_cert_chain(tmp_path / 'credentials/gateway-server.pem', tmp_path / 'credentials/gateway-server.key')
     listener = socket.socket()

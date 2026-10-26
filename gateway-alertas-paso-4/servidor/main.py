@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+import asyncio
 from pathlib import Path
 from typing import Annotated
 
@@ -11,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from config import settings
 from gateway_web import install_gateway, initialize_gateway
+from sync_service import auto_sync, synchronize
 from database import Database, SyncSafetyError
 from message_builder import (
     ALERT_TYPES,
@@ -19,6 +21,7 @@ from message_builder import (
     AlertValidationError,
     MessagePreview,
     build_message,
+    controlled_reason_limit,
 )
 from recipient_validation import HeaderValidationError, validate_sheet_values
 from sheets_service import (
@@ -36,13 +39,19 @@ database = Database(settings.database_path)
 async def lifespan(_: FastAPI):
     database.initialize()
     initialize_gateway(database)
-    yield
+    background = asyncio.create_task(auto_sync(database,settings))
+    try:
+        yield
+    finally:
+        background.cancel()
+        with suppress(asyncio.CancelledError):
+            await background
 
 
 app = FastAPI(
     title="Programa de Alertas",
     description="Prototipo institucional con Google Sheets y simulación local",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -64,6 +73,9 @@ def common_context(request: Request, *, active_page: str) -> dict[str, object]:
         "buildings": BUILDINGS,
         "alert_types": ALERT_TYPES,
         "technical_causes": TECHNICAL_CAUSES,
+        "controlled_reason_limits": {
+            building_id: controlled_reason_limit(building_id) for building_id in BUILDINGS
+        },
     }
 
 
@@ -93,6 +105,7 @@ def preview_context(
     alert_type: str,
     technical_cause: str,
     other_description: str,
+    controlled_reason: str = "",
     error: str | None = None,
 ) -> dict[str, object]:
     recipients = database.get_active_sms_recipients(building_id)
@@ -104,12 +117,12 @@ def preview_context(
             "alert_type": alert_type,
             "technical_cause": technical_cause,
             "other_description": other_description,
+            "controlled_reason": controlled_reason,
             "recipients": recipients,
-            "recipient_limit": settings.test_recipient_limit,
             "last_sync": database.get_last_sync(),
             "error": error,
             "can_simulate": (
-                0 < len(recipients) <= settings.test_recipient_limit
+                0 < len(recipients)
                 and not settings.sms_enabled
             ),
         }
@@ -123,14 +136,14 @@ def health_check() -> dict[str, object]:
     from gateway_config import load_gateway_config
     from gateway_store import GatewayStore
     gateway_config = load_gateway_config()
-    gateway_enabled = bool(gateway_config and GatewayStore(database.path, gateway_config["allowed_numbers"])
+    gateway_enabled = bool(gateway_config and GatewayStore(database.path)
                            .dashboard()["control"]["enabled"])
     return {
         "status": "ok",
         "mode": settings.app_mode,
         "sms_enabled": settings.sms_enabled,
         "gateway_test_sms_enabled": gateway_enabled,
-        "version": "0.4.0",
+        "version": "0.5.0",
         "database_ready": settings.database_path.exists(),
         "last_sync_status": last_sync["status"] if last_sync else None,
     }
@@ -152,12 +165,14 @@ def preview_alert(
     alert_type: Annotated[str, Form()],
     technical_cause: Annotated[str, Form()] = "",
     other_description: Annotated[str, Form()] = "",
+    controlled_reason: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     selected = {
         "building_id": building_id,
         "alert_type": alert_type,
         "technical_cause": technical_cause,
         "other_description": other_description,
+        "controlled_reason": controlled_reason,
     }
 
     try:
@@ -166,6 +181,7 @@ def preview_alert(
             alert_type=alert_type,
             technical_cause=technical_cause,
             other_description=other_description,
+            controlled_reason=controlled_reason,
         )
     except AlertValidationError as exc:
         return templates.TemplateResponse(
@@ -185,6 +201,7 @@ def preview_alert(
             alert_type=alert_type,
             technical_cause=technical_cause,
             other_description=other_description,
+            controlled_reason=controlled_reason,
         ),
     )
 
@@ -196,6 +213,7 @@ def simulate_alert(
     alert_type: Annotated[str, Form()],
     technical_cause: Annotated[str, Form()] = "",
     other_description: Annotated[str, Form()] = "",
+    controlled_reason: Annotated[str, Form()] = "",
     confirm_simulation: Annotated[str | None, Form()] = None,
 ) -> HTMLResponse:
     try:
@@ -204,12 +222,20 @@ def simulate_alert(
             alert_type=alert_type,
             technical_cause=technical_cause,
             other_description=other_description,
+            controlled_reason=controlled_reason,
         )
     except AlertValidationError as exc:
+        selected = {
+            "building_id": building_id,
+            "alert_type": alert_type,
+            "technical_cause": technical_cause,
+            "other_description": other_description,
+            "controlled_reason": controlled_reason,
+        }
         return templates.TemplateResponse(
             request=request,
             name="index.html",
-            context=form_context(request, error=str(exc)),
+            context=form_context(request, error=str(exc), selected=selected),
             status_code=400,
         )
 
@@ -225,11 +251,6 @@ def simulate_alert(
         error = "Debe marcar la casilla de confirmación para registrar la simulación."
     elif not recipients:
         error = "No hay destinatarios activos con SMS habilitado para este edificio."
-    elif len(recipients) > settings.test_recipient_limit:
-        error = (
-            f"Hay {len(recipients)} destinatarios, pero el límite de prueba es "
-            f"{settings.test_recipient_limit}. La simulación fue bloqueada."
-        )
 
     if error:
         return templates.TemplateResponse(
@@ -242,6 +263,7 @@ def simulate_alert(
                 alert_type=alert_type,
                 technical_cause=technical_cause,
                 other_description=other_description,
+                controlled_reason=controlled_reason,
                 error=error,
             ),
             status_code=400,
@@ -251,7 +273,9 @@ def simulate_alert(
         building_id=building_id,
         alert_type=alert_type,
         technical_cause=technical_cause,
-        other_description=other_description,
+        other_description=(
+            controlled_reason if alert_type == "controlled" else other_description
+        ),
         preview=preview,
         recipients=recipients,
     )
@@ -308,22 +332,7 @@ def recipients_page(request: Request) -> HTMLResponse:
 
 @app.post("/recipients/sync", response_class=HTMLResponse)
 def sync_recipients(request: Request) -> HTMLResponse:
-    fatal_error: str | None = None
-    result = None
-    summary = None
-
-    try:
-        values = read_sheet_values(settings)
-        result = validate_sheet_values(values)
-        summary = database.sync_recipients(result)
-    except (
-        SheetsConfigurationError,
-        SheetsReadError,
-        HeaderValidationError,
-        SyncSafetyError,
-    ) as exc:
-        fatal_error = str(exc)
-        database.record_failed_sync(fatal_error)
+    result, summary, fatal_error = synchronize(database,settings)
 
     context = common_context(request, active_page="recipients")
     context.update(

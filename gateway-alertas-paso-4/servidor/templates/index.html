@@ -86,6 +86,21 @@
             </div>
         </div>
 
+        <div id="controlled-fields" hidden>
+            <label for="controlled_reason">Motivo por el que se da por finalizada la alerta</label>
+            <textarea
+                id="controlled_reason"
+                name="controlled_reason"
+                rows="3"
+                maxlength="160"
+                placeholder="Ej.: Falsa alarma por sensor de humo activado en cocina"
+            >{{ selected.get('controlled_reason', '') }}</textarea>
+            <div class="field-help">
+                El límite se ajusta al edificio para que el mensaje completo no supere 160 caracteres.
+                <span id="controlled-counter">0/160</span>
+            </div>
+        </div>
+
         <button type="submit">Generar vista previa</button>
     </form>
 </section>
@@ -97,6 +112,11 @@
     const otherFields = document.getElementById("other-fields");
     const otherDescription = document.getElementById("other_description");
     const otherCounter = document.getElementById("other-counter");
+    const controlledFields = document.getElementById("controlled-fields");
+    const controlledReason = document.getElementById("controlled_reason");
+    const controlledCounter = document.getElementById("controlled-counter");
+    const building = document.getElementById("building_id");
+    const reasonLimits = {{ controlled_reason_limits | tojson }};
 
     function updateConditionalFields() {
         const isTechnical = alertType.value === "technical";
@@ -106,6 +126,16 @@
         const isOther = isTechnical && technicalCause.value === "other";
         otherFields.hidden = !isOther;
         otherDescription.required = isOther;
+
+        const isControlled = alertType.value === "controlled";
+        controlledFields.hidden = !isControlled;
+        controlledReason.required = isControlled;
+        controlledReason.maxLength = reasonLimits[building.value] || 160;
+        if (controlledReason.value.length > controlledReason.maxLength) {
+            controlledReason.value = controlledReason.value.slice(0, controlledReason.maxLength);
+        }
+        controlledCounter.textContent =
+            `${controlledReason.value.length}/${controlledReason.maxLength}`;
     }
 
     function updateCounter() {
@@ -115,6 +145,11 @@
     alertType.addEventListener("change", updateConditionalFields);
     technicalCause.addEventListener("change", updateConditionalFields);
     otherDescription.addEventListener("input", updateCounter);
+    controlledReason.addEventListener("input", () => {
+        controlledCounter.textContent =
+            `${controlledReason.value.length}/${controlledReason.maxLength}`;
+    });
+    building.addEventListener("change", updateConditionalFields);
 
     updateConditionalFields();
     updateCounter();

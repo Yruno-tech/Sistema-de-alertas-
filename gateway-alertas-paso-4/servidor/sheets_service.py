@@ -54,6 +54,8 @@ def read_sheet_values(settings: Settings) -> Sequence[Sequence[object]]:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
+        import httplib2
+        import google_auth_httplib2
     except ImportError as exc:
         raise SheetsConfigurationError(
             "Faltan las bibliotecas de Google. Ejecute: "
@@ -70,7 +72,7 @@ def read_sheet_values(settings: Settings) -> Sequence[Sequence[object]]:
         service = build(
             "sheets",
             "v4",
-            credentials=credentials,
+            http=google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http(timeout=10)),
             cache_discovery=False,
         )
         result = (

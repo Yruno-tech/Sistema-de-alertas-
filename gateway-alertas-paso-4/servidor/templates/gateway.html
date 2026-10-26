@@ -1,67 +1,76 @@
-{% extends "base.html" %}
-{% block title %}SMS desde la PC · Programa de Alertas{% endblock %}
+{% extends 'base.html' %}
+{% block title %}Enviar aviso · Programa de Alertas{% endblock %}
 {% block content %}
 <section class="card">
-  <p class="eyebrow">PRUEBA CON SMS REALES · HASTA 3 DESTINATARIOS</p>
-  <h1>Enviar SMS desde la computadora</h1>
-  <p>El teléfono recibe la orden y envía con la SIM seleccionada.</p>
-  <p><strong id="phone-state">{{ 'Teléfono activo' if control.connected else 'Esperando al teléfono' }}</strong>
-    · <span id="sim-state">{{ control.sim_label or 'SIM sin informar' }}</span></p>
-  <p id="queue-state">{{ 'Envíos habilitados' if control.enabled else 'Gateway pausado' }}</p>
-  <div class="actions">
-    <form method="post" action="/gateway/control"><input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <input type="hidden" name="enabled" value="yes"><button type="submit">Habilitar envíos de prueba</button></form>
-    <form method="post" action="/gateway/control"><input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <input type="hidden" name="enabled" value="no"><button type="submit" class="button-secondary">Pausar gateway</button></form>
-  </div>
-  <p>Mantené la aplicación abierta. Hay al menos 30 segundos entre SMS y la cola vence a los 10 minutos.</p>
-  <p>Última sincronización: {{ last_sync.status if last_sync else 'Todavía no realizada' }}.
-    <a href="/recipients">Revisar destinatarios y sincronizar</a></p>
+  <p class="eyebrow">SMS DESDE LA PC · MODO PRUEBA</p><h1>Enviar un aviso</h1>
+  <div class="gateway-status"><strong id="phone-state">Comprobando celular…</strong> · <span id="sim-state">{{ control.sim_label }}</span></div>
+  <p id="sync-state">Comprobando destinatarios…</p>
+  <div class="actions"><button id="pair-button" type="button" class="button-secondary">Conectar celular (QR)</button>
+    <a href="/recipients">Ver destinatarios</a></div>
+  <section id="pair-panel" hidden aria-label="Emparejar celular">
+    <p>En el celular: <strong>Escanear QR</strong>. Este código permite vincular un teléfono durante 5 minutos.</p>
+    <img id="pair-image" alt="Código QR para vincular el gateway" width="360" height="360" style="max-width:100%;height:auto">
+    <p id="pair-detail" aria-live="polite"></p>
+  </section>
 </section>
 <section class="card">
-  <h2>Preparar una alerta de prueba</h2>
-  <form method="get" action="/gateway">
-    <label for="building">Edificio</label>
-    <select id="building" name="building">{% for id, building in buildings.items() %}
-      <option value="{{ id }}" {% if id == selected_building %}selected{% endif %}>{{ building.label }}</option>
-    {% endfor %}</select>
-    <button type="submit" class="button-secondary">Cargar oficinas de este edificio</button>
-  </form>
-  <hr>
-  <form method="post" action="/gateway/preview">
+  <form id="send-form">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
-    <input type="hidden" name="building_id" value="{{ selected_building }}">
-    <label for="office">Oficina en {{ buildings[selected_building].label }}</label>
-    <select id="office" name="office"><option value="">Todas las oficinas del edificio</option>
-      {% for office in offices %}<option value="{{ office }}">{{ office }}</option>{% endfor %}</select>
-    <label for="gateway-alert-type">Tipo de alerta</label>
-    <select id="gateway-alert-type" name="alert_type">{% for id, label in alert_types.items() %}
-      <option value="{{ id }}">{{ label }}</option>{% endfor %}</select>
-    <div id="gateway-cause">
-      <label for="gateway-cause-type">Causa técnica</label>
-      <select id="gateway-cause-type" name="technical_cause"><option value="">Seleccionar</option>
-        {% for id, cause in technical_causes.items() %}<option value="{{ id }}">{{ cause.label }}</option>{% endfor %}</select>
-      <label for="other">Descripción de “Otros” (hasta 50 caracteres)</label>
-      <input id="other" name="other_description" maxlength="50">
+    <div class="gateway-fields">
+      <div><label for="building">Edificio</label><select id="building" name="building_id">
+        {% for id,b in buildings.items() %}<option value="{{ id }}" {% if id=='edificio-anexo' %}selected{% endif %}>{{ b.label }}</option>{% endfor %}
+      </select></div>
+      <div><label for="office">Oficina</label><select id="office" name="office"><option value="">Todas las oficinas</option></select></div>
+      <div><label for="gateway-alert-type">Aviso</label><select id="gateway-alert-type" name="alert_type">
+        {% for id,label in alert_types.items() %}<option value="{{ id }}" {% if id=='maintenance' %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select></div>
     </div>
-    <button type="submit">Revisar mensaje y destinatarios</button>
+    <div id="gateway-cause" hidden>
+      <label for="cause">Causa técnica</label><select name="technical_cause" id="cause"><option value="">Seleccionar</option>
+        {% for id,c in technical_causes.items() %}<option value="{{ id }}">{{ c.label }}</option>{% endfor %}</select>
+      <label for="other">Otros (hasta 50 caracteres)</label><input id="other" name="other_description" maxlength="50">
+    </div>
+    <div id="controlled-fields" hidden>
+      <label for="controlled-reason">Motivo por el que se da por finalizada la alerta</label>
+      <textarea id="controlled-reason" name="controlled_reason" rows="3" maxlength="160"
+        placeholder="Ej.: Falsa alarma por sensor de humo activado en cocina"></textarea>
+      <p class="help-text">El límite se ajusta al edificio para que el SMS completo no supere 160 caracteres.
+        <span id="controlled-reason-counter">0/160</span></p>
+    </div>
+    <blockquote id="message-preview">Cargando mensaje…</blockquote>
+    <p><strong id="recipient-count">Calculando destinatarios…</strong> · <span id="segments"></span></p>
+    <p>Solo reciben SMS las personas con <strong>activo=SI y sms=SI</strong>. Quienes tienen sms=NO quedan excluidos.</p>
+    <details><summary>Ver destinatarios incluidos</summary><ul id="recipient-list" class="gateway-recipient-list"></ul></details>
+    <p id="send-feedback" role="status" aria-live="polite"></p>
+    <button id="send-now" type="submit" disabled>Enviar ahora</button>
+    <p class="help-text">Este botón autoriza el envío de SMS reales con el texto mostrado.</p>
   </form>
 </section>
-<section id="batches" class="card">
-  <h2>Seguimiento de las últimas 30 pruebas</h2>
-  <p>“Enviado” confirma el envío. “Entregado” requiere el informe de la operadora; no significa que fue leído.
-    Si el resultado es desconocido, la cola se pausa y el SMS no se reenvía automáticamente.</p>
+<section class="card" id="batches">
+  <h2>Seguimiento</h2><p id="queue-state"></p>
+  <div class="actions">
+    <form method="post" action="/gateway/control"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="enabled" value="no"><button class="button-secondary">Pausar pendientes</button></form>
+    <form method="post" action="/gateway/control"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="enabled" value="yes"><button class="button-secondary">Continuar pendientes</button></form>
+  </div>
   {% for batch in batches %}<article class="gateway-batch">
-    <h3>Prueba {{ batch.id[:8] }} · {{ buildings[batch.building_id].label }}</h3>
+    <h3>Aviso {{ batch.id[:8] }} · {{ buildings[batch.building_id].label }}</h3>
     <p>{{ batch.office or 'Todas las oficinas' }} · <span data-batch-state="{{ batch.id }}">{{ batch.status }}</span></p>
     <blockquote>{{ batch.message }}</blockquote><p data-counts="{{ batch.id }}"></p>
-    <div class="table-wrapper"><table><thead><tr><th>Destinatario</th><th>Teléfono</th><th>Oficina</th><th>Estado</th><th>Detalle</th></tr></thead>
-      <tbody>{% for job in batch.jobs %}<tr data-job="{{ job.id }}"><td>{{ job.recipient_name }}</td><td>{{ job.phone_masked }}</td>
-        <td>{{ job.office or 'Sin oficina' }}</td><td class="job-state">{{ job.status }}</td><td class="job-detail">{{ job.detail }}</td></tr>{% endfor %}</tbody></table></div>
-    <form method="post" action="/gateway/batches/{{ batch.id }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <button type="submit" class="button-secondary">Detener envíos pendientes de esta prueba</button></form>
-  </article>{% else %}<p>Todavía no hay pruebas preparadas.</p>{% endfor %}
-  <p>Detener cancela los pendientes. Un SMS cuyo envío ya comenzó puede completarse.</p>
+    <details><summary>Resultados por destinatario ({{ batch.jobs|length }})</summary>
+      <div class="table-wrapper"><table><thead><tr><th>Persona</th><th>Teléfono</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
+        {% for job in batch.jobs %}<tr data-job="{{ job.id }}"><td>{{ job.recipient_name }}</td><td>{{ job.phone_masked }}</td><td class="job-state">{{ job.status }}</td><td class="job-detail">{{ job.detail }}</td></tr>{% endfor %}
+      </tbody></table></div>
+    </details>
+    <form method="post" action="/gateway/batches/{{ batch.id }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="button-secondary">Detener pendientes de este aviso</button></form>
+  </article>{% else %}<p>Todavía no hay avisos enviados.</p>{% endfor %}
+  <p>Un SMS que ya comenzó puede completarse después de detener. Un resultado desconocido pausa la cola sin reenviar ese SMS.</p>
 </section>
+<details class="card"><summary>Ajustes del envío</summary>
+  <form method="post" action="/gateway/interval"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label for="interval">Segundos mínimos entre SMS</label><input id="interval" name="seconds" type="number" min="1" max="60" value="{{ control.interval_seconds }}" required>
+    <button class="button-secondary">Guardar intervalo</button>
+  </form>
+  <p>Se espera el resultado de cada envío antes de iniciar el siguiente. La velocidad efectiva depende de Android y la operadora. Mantené la app abierta.</p>
+</details>
 <script src="/static/gateway.js" defer></script>
 {% endblock %}

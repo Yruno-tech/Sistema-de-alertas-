@@ -26,7 +26,10 @@ ALERT_TYPES = {
     "evacuation": "Alarma de Evacuación",
     "maintenance": "Mantenimiento/Pruebas",
     "technical": "Error técnico",
+    "controlled": "Alarma de Situación Controlada",
 }
+
+CONTROLLED_REASON_SUFFIX = ". Puede retornar a sus actividades."
 
 TECHNICAL_CAUSES = {
     "sensor-dirt": {
@@ -76,11 +79,24 @@ def normalize_sms_text(value: str) -> str:
     return ascii_text
 
 
+def controlled_reason_limit(building_id: str) -> int:
+    building = BUILDINGS.get(building_id)
+    if building is None:
+        raise AlertValidationError("Seleccione un edificio válido.")
+
+    fixed_text = (
+        f"{TEST_PREFIX}AVISO: Situacion controlada en {building['sms_name']}. "
+        f"Motivo: {CONTROLLED_REASON_SUFFIX}"
+    )
+    return MAX_SMS_CHARS - len(fixed_text)
+
+
 def build_message(
     building_id: str,
     alert_type: str,
     technical_cause: str = "",
     other_description: str = "",
+    controlled_reason: str = "",
 ) -> MessagePreview:
     building = BUILDINGS.get(building_id)
     if building is None:
@@ -103,6 +119,22 @@ def build_message(
             f"{TEST_PREFIX}AVISO MANTENIMIENTO - {sms_building}. "
             "Alarma por tareas programadas. Mantenga la calma y siga las "
             "indicaciones de seguridad."
+        )
+    elif alert_type == "controlled":
+        reason_limit = controlled_reason_limit(building_id)
+        if not controlled_reason.strip():
+            raise AlertValidationError("Ingrese el motivo por el que finaliza la alerta.")
+        if len(controlled_reason) > reason_limit:
+            raise AlertValidationError(
+                f"El motivo admite hasta {reason_limit} caracteres para este edificio."
+            )
+        cause_text = normalize_sms_text(controlled_reason).rstrip(". ")
+        if not cause_text:
+            raise AlertValidationError("Ingrese un motivo válido para finalizar la alerta.")
+        cause_label = f"Motivo: {controlled_reason.strip()}"
+        message = (
+            f"{TEST_PREFIX}AVISO: Situacion controlada en {sms_building}. "
+            f"Motivo: {cause_text}{CONTROLLED_REASON_SUFFIX}"
         )
     else:
         cause = TECHNICAL_CAUSES.get(technical_cause)

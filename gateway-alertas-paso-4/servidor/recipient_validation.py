@@ -266,15 +266,6 @@ def validate_sheet_values(values: Sequence[Sequence[object]]) -> ValidationResul
         row_errors: list[str] = []
         normalized_phone: str | None = None
 
-        try:
-            normalized_phone = normalize_argentina_mobile(raw_phone)
-        except ValueError as exc:
-            row_errors.append(str(exc))
-
-        tentative_source_key = _source_key(external_id, normalized_phone)
-        if tentative_source_key:
-            seen_source_keys.add(tentative_source_key)
-
         if not name:
             row_errors.append("el nombre está vacío")
         if len(office) > 120:
@@ -298,6 +289,16 @@ def validate_sheet_values(values: Sequence[Sequence[object]]) -> ValidationResul
             row_errors.append(str(exc))
             sms_enabled = False
 
+        # A disabled SMS channel does not require a usable phone number.
+        try:
+            normalized_phone = normalize_argentina_mobile(raw_phone)
+        except ValueError as exc:
+            normalized_phone = ""
+            if active and sms_enabled:
+                row_errors.append(str(exc))
+        tentative_source_key = _source_key(external_id, normalized_phone) or f"row:{row_number}"
+        seen_source_keys.add(tentative_source_key)
+
         try:
             email_enabled = parse_boolean(
                 raw_email_enabled,
@@ -308,16 +309,16 @@ def validate_sheet_values(values: Sequence[Sequence[object]]) -> ValidationResul
             row_errors.append(str(exc))
             email_enabled = False
 
-        if email and not EMAIL_PATTERN.fullmatch(email):
+        if active and email_enabled and email and not EMAIL_PATTERN.fullmatch(email):
             row_errors.append("el correo electrónico no tiene un formato válido")
-        if email_enabled and not email:
+        if active and email_enabled and not email:
             row_errors.append(
                 "correo_habilitado está en SI, pero la celda correo está vacía"
             )
 
         if tentative_source_key and tentative_source_key in accepted_source_keys:
             row_errors.append("el ID o teléfono está duplicado en la planilla")
-        if normalized_phone and normalized_phone in accepted_phones:
+        if active and sms_enabled and normalized_phone and normalized_phone in accepted_phones:
             row_errors.append("el teléfono está duplicado en la planilla")
 
         if row_errors:
@@ -349,7 +350,8 @@ def validate_sheet_values(values: Sequence[Sequence[object]]) -> ValidationResul
         )
         recipients.append(recipient)
         accepted_source_keys.add(tentative_source_key)
-        accepted_phones.add(normalized_phone)
+        if active and sms_enabled:
+            accepted_phones.add(normalized_phone)
 
     return ValidationResult(
         recipients=tuple(recipients),

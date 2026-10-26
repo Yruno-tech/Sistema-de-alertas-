@@ -65,7 +65,6 @@ class Settings:
     sheets_range: str
     service_account_file: Path
     database_path: Path
-    test_recipient_limit: int
 
     @classmethod
     def load(cls) -> "Settings":
@@ -96,7 +95,6 @@ class Settings:
                 os.getenv("DATABASE_PATH", ""),
                 "data/alerts.db",
             ),
-            test_recipient_limit=_env_int("TEST_RECIPIENT_LIMIT", 3),
         )
 
 
