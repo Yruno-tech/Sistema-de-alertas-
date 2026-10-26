@@ -238,6 +238,9 @@ class Database:
                 updated += 1
 
             invalid_keys = {error.source_key for error in result.errors}
+            # Quarantine rejected identities even if inserted during this sync.
+            for invalid_key in invalid_keys:
+                connection.execute("UPDATE recipients SET active=0,sms_enabled=0 WHERE source_key=?", (invalid_key,))
             for source_key, current in existing.items():
                 if source_key in invalid_keys:
                     # A rejected current row must not leave an old, sendable record.

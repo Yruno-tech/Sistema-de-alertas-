@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 import sqlite3
 import time
 import uuid
@@ -11,7 +13,7 @@ from pathlib import Path
 from database import mask_phone
 
 SAFE_TEXT = re.compile(r"^PRUEBA - [A-Za-z0-9 .,;:()/_-]+$")
-SMS_INTERVAL = 30
+SMS_INTERVAL = 2
 CLAIM_TTL = 60
 START_TTL = 120
 BATCH_TTL = 600
@@ -22,9 +24,8 @@ class QueueError(ValueError):
 
 
 class GatewayStore:
-    def __init__(self, path: Path, allowed_numbers: list[str], clock=time.time):
+    def __init__(self, path: Path, allowed_numbers=None, clock=time.time):
         self.path = Path(path)
-        self.allowed = frozenset(allowed_numbers)
         self.clock = clock
 
     @contextmanager
@@ -50,7 +51,7 @@ class GatewayStore:
               id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0,
               device_id TEXT NOT NULL DEFAULT '', last_seen REAL NOT NULL DEFAULT 0,
               active INTEGER NOT NULL DEFAULT 0, sim_label TEXT NOT NULL DEFAULT '',
-              last_start REAL NOT NULL DEFAULT 0);
+              last_start REAL NOT NULL DEFAULT 0, interval_seconds INTEGER NOT NULL DEFAULT 2);
             INSERT OR IGNORE INTO gateway_control(id) VALUES(1);
             CREATE TABLE IF NOT EXISTS gateway_batches (
               id TEXT PRIMARY KEY, building_id TEXT NOT NULL, office TEXT,
@@ -71,6 +72,9 @@ class GatewayStore:
               id INTEGER PRIMARY KEY, at REAL NOT NULL, job_id TEXT, batch_id TEXT,
               action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
             """)
+            columns = {r[1] for r in db.execute('PRAGMA table_info(gateway_control)')}
+            if 'interval_seconds' not in columns:
+                db.execute('ALTER TABLE gateway_control ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 2')
 
     def _audit(self, db, action, *, job_id=None, batch_id=None, detail=""):
         db.execute("INSERT INTO gateway_audit(at,job_id,batch_id,action,detail) VALUES(?,?,?,?,?)",
@@ -108,7 +112,80 @@ class GatewayStore:
             db.execute("UPDATE gateway_control SET last_seen=?,active=?,sim_label=? WHERE id=1",
                        (self.clock(), int(active), sim_label[:100]))
             enabled = bool(db.execute("SELECT enabled FROM gateway_control WHERE id=1").fetchone()[0])
-        return {"enabled": enabled, "mode": "test", "max_recipients": 3, "interval_seconds": SMS_INTERVAL}
+        return {"enabled": enabled, "mode": "test", "protocol_version": 2, "recipient_policy": "database"}
+
+    def set_interval(self, seconds):
+        if not 1 <= seconds <= 60:
+            raise QueueError('El intervalo debe estar entre 1 y 60 segundos')
+        with self.transaction() as db:
+            db.execute('UPDATE gateway_control SET interval_seconds=? WHERE id=1', (seconds,))
+
+    def _recipients(self, db, building_id, office):
+        sync = db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
+        if not sync or sync['status'] not in ('success', 'success_with_errors'):
+            raise QueueError('No hay una sincronización válida reciente. Revisá el estado de Google Sheets.')
+        sql = 'SELECT * FROM recipients WHERE active=1 AND sms_enabled=1 AND building_id=?'
+        args = [building_id]
+        if office is not None:
+            sql += ' AND office=?'
+            args.append(office)
+        rows = db.execute(sql + ' ORDER BY id', args).fetchall()
+        if len({r['phone'] for r in rows}) != len(rows):
+            raise QueueError('Hay números repetidos entre los destinatarios habilitados')
+        return rows, sync
+
+    def _snapshot(self, rows, building_id, office, message):
+        payload = [building_id, office, message, [(r['id'], r['name'], r['phone'], r['office']) for r in rows]]
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
+
+    def quote(self, building_id, office, message):
+        self._validate_message(message)
+        with self.transaction() as db:
+            rows, sync = self._recipients(db, building_id, office)
+            return {'message': message, 'count': len(rows),
+                    'snapshot': self._snapshot(rows, building_id, office, message),
+                    'recipients': [{'name': r['name'], 'phone': mask_phone(r['phone']), 'office': r['office']} for r in rows],
+                    'skipped_rows': sync['rejected']}
+
+    def _validate_message(self, message):
+        if not SAFE_TEXT.fullmatch(message) or len(message) > 160:
+            raise QueueError('El mensaje debe ser de prueba y ocupar un segmento')
+
+    def enqueue(self, building_id, office, message, request_id, snapshot):
+        """One operator click; one atomic snapshot and durable idempotency key."""
+        self._validate_message(message)
+        try:
+            if str(uuid.UUID(request_id)) != request_id:
+                raise ValueError()
+        except ValueError:
+            raise QueueError('Identificador de envío inválido')
+        with self.transaction() as db:
+            self._housekeeping(db)
+            existing = db.execute('SELECT id FROM gateway_batches WHERE id=?', (request_id,)).fetchone()
+            if existing:
+                return existing['id']
+            rows, sync = self._recipients(db, building_id, office)
+            if not rows:
+                raise QueueError('No hay personas con activo=SI y sms=SI para esta selección')
+            if snapshot != self._snapshot(rows, building_id, office, message):
+                raise QueueError('La lista cambió. Se actualizó la vista: revisá la cantidad y pulsá Enviar ahora.')
+            control = db.execute('SELECT * FROM gateway_control WHERE id=1').fetchone()
+            if not control['active'] or control['last_seen'] < self.clock()-15:
+                raise QueueError('El celular no está activo. Abrí la app y activá el gateway.')
+            if db.execute("SELECT 1 FROM gateway_jobs WHERE status IN ('QUEUED','CLAIMED','STARTED') LIMIT 1").fetchone():
+                raise QueueError('Hay un envío en curso. Podés detener sus pendientes antes de iniciar otro.')
+            now = self.clock()
+            expiry = now + max(BATCH_TTL, len(rows)*(control['interval_seconds']+15)+300)
+            db.execute("""INSERT INTO gateway_batches
+              (id,building_id,office,message,status,created_at,expires_at,confirmed_at,preview_sync_id)
+              VALUES(?,?,?,?,'QUEUED',?,?,?,?)""", (request_id,building_id,office,message,now,expiry,now,sync['id']))
+            for row in rows:
+                db.execute("""INSERT INTO gateway_jobs
+                  (id,batch_id,recipient_id,recipient_name,phone,office,status,updated_at)
+                  VALUES(?,?,?,?,?,?,'QUEUED',?)""", (str(uuid.uuid4()),request_id,row['id'],row['name'],row['phone'],row['office'],now))
+            db.execute('UPDATE gateway_control SET enabled=1 WHERE id=1')
+            self._audit(db, 'SEND_NOW', batch_id=request_id, detail=f'{len(rows)} destinatarios')
+        return request_id
 
     def set_enabled(self, enabled):
         with self.transaction() as db:
@@ -121,7 +198,7 @@ class GatewayStore:
             raise QueueError("El mensaje debe ser de prueba y ocupar un segmento")
         with self.transaction() as db:
             sync = db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
-            if not sync or sync["status"] != "success":
+            if not sync or sync["status"] not in ("success", "success_with_errors"):
                 raise QueueError("Sincronizá la planilla sin errores antes de preparar SMS reales de prueba")
             sql = "SELECT * FROM recipients WHERE active=1 AND sms_enabled=1 AND building_id=?"
             args = [building_id]
@@ -129,10 +206,8 @@ class GatewayStore:
                 sql += " AND office=?"
                 args.append(office)
             recipients = db.execute(sql + " ORDER BY id", args).fetchall()
-            if not 1 <= len(recipients) <= 3:
-                raise QueueError("Seleccioná entre 1 y 3 destinatarios; no se recorta la lista automáticamente")
-            if any(r["phone"] not in self.allowed for r in recipients):
-                raise QueueError("Hay destinatarios fuera de los números autorizados al configurar el gateway")
+            if not recipients:
+                raise QueueError("No hay personas con activo=SI y sms=SI para esta selección")
             if len({r["phone"] for r in recipients}) != len(recipients):
                 raise QueueError("Se detectaron teléfonos repetidos")
             batch_id, now = str(uuid.uuid4()), self.clock()
@@ -150,7 +225,7 @@ class GatewayStore:
     def _current_recipient_valid(self, db, job, building_id):
         row = db.execute("SELECT * FROM recipients WHERE id=?", (job["recipient_id"],)).fetchone()
         return bool(row and row["active"] and row["sms_enabled"] and
-                    row["phone"] == job["phone"] and row["phone"] in self.allowed and
+                    row["phone"] == job["phone"] and
                     row["building_id"] == building_id and row["office"] == job["office"])
 
     def confirm(self, batch_id):
@@ -167,17 +242,17 @@ class GatewayStore:
             if not control["enabled"] or not control["active"] or control["last_seen"] < self.clock()-15:
                 raise QueueError("Activá el gateway en el teléfono y habilitá los envíos en la PC")
             sync = db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
-            if not sync or sync["status"] != "success" or sync["id"] != batch["preview_sync_id"]:
+            if not sync or sync["status"] not in ("success", "success_with_errors") or sync["id"] != batch["preview_sync_id"]:
                 raise QueueError("La sincronización cambió: revisá una nueva vista previa")
             jobs = db.execute("SELECT * FROM gateway_jobs WHERE batch_id=?", (batch_id,)).fetchall()
-            if not 1 <= len(jobs) <= 3 or any(not self._current_recipient_valid(db,j,batch["building_id"]) for j in jobs):
+            if not jobs or any(not self._current_recipient_valid(db,j,batch["building_id"]) for j in jobs):
                 raise QueueError("Los destinatarios cambiaron: generá otra vista previa")
             # Distinct simultaneous batches are unnecessary in the three-person pilot.
             if db.execute("SELECT 1 FROM gateway_jobs WHERE status IN ('QUEUED','CLAIMED','STARTED') LIMIT 1").fetchone():
                 raise QueueError("Ya hay una prueba en curso; terminá o detené esa cola")
             now = self.clock()
             db.execute("UPDATE gateway_batches SET status='QUEUED',confirmed_at=?,expires_at=? WHERE id=?",
-                       (now, now+BATCH_TTL, batch_id))
+                       (now, now+max(BATCH_TTL,len(jobs)*(control['interval_seconds']+15)+300), batch_id))
             db.execute("UPDATE gateway_jobs SET status='QUEUED',updated_at=? WHERE batch_id=?", (now,batch_id))
             self._audit(db, "CONFIRM", batch_id=batch_id)
 
@@ -193,7 +268,7 @@ class GatewayStore:
             self._housekeeping(db)
             self._bind_device(db, device_id)
             control = db.execute("SELECT * FROM gateway_control WHERE id=1").fetchone()
-            if not control["enabled"] or control["last_start"] > self.clock()-SMS_INTERVAL:
+            if not control["enabled"] or control["last_start"] > self.clock()-control['interval_seconds']:
                 return None
             if db.execute("SELECT 1 FROM gateway_jobs WHERE status='STARTED' LIMIT 1").fetchone():
                 return None
@@ -210,7 +285,8 @@ class GatewayStore:
             batch = db.execute("SELECT * FROM gateway_batches WHERE id=?",(row["batch_id"],)).fetchone()
             return {"id":row["id"], "batch_id":row["batch_id"], "phone":row["phone"],
                     "message":batch["message"], "ticket":row["ticket"], "mode":"test",
-                    "expires_at":batch["expires_at"]}
+                    "expires_at":batch["expires_at"], "protocol_version":2,
+                    "recipient_policy":"database", "interval_seconds":control['interval_seconds']}
 
     def start(self, device_id, job_id, ticket):
         with self.transaction() as db:
@@ -227,7 +303,7 @@ class GatewayStore:
                 db.execute("UPDATE gateway_jobs SET status='CANCELLED',detail='Destinatario cambió' WHERE id=?",(job_id,))
                 return {"allowed":False, "status":"CANCELLED"}
             sync = db.execute("SELECT status FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
-            if not sync or sync["status"] != "success":
+            if not sync or sync["status"] not in ("success", "success_with_errors"):
                 return {"allowed":False, "status":"SYNC_ERROR"}
             if job["status"] == "CLAIMED":
                 now=self.clock()

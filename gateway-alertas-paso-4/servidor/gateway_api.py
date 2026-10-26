@@ -9,12 +9,14 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from database import Database
-from gateway_config import load_gateway_config, token_valid
+from gateway_config import load_gateway_config
+from gateway_pairing import PairingService
 from gateway_store import GatewayStore, QueueError
 
 
 class Heartbeat(BaseModel):
     active: bool
+    protocol_version: Literal[2]
     sim_label: str = Field(default="",max_length=100)
 
 
@@ -29,14 +31,21 @@ class Report(Start):
     detail: str = Field(default="",max_length=250)
 
 
+class Pair(BaseModel):
+    id: str = Field(min_length=36,max_length=36)
+    secret: str = Field(min_length=40,max_length=100)
+
+
 def create_api(config=None, store=None):
     config=config or load_gateway_config(required=True)
-    store=store or GatewayStore(settings.database_path,config["allowed_numbers"])
+    store=store or GatewayStore(settings.database_path)
+    pairing=PairingService(store.path,config)
 
     @asynccontextmanager
     async def lifespan(app):
         Database(store.path).initialize()
         store.initialize()
+        pairing.initialize()
         yield
 
     api=FastAPI(title="Gateway privado",lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
@@ -47,8 +56,6 @@ def create_api(config=None, store=None):
             return JSONResponse({"detail":"Se requiere HTTPS"},status_code=403)
         authorization=request.headers.get("authorization","")
         token=authorization[7:] if authorization.startswith("Bearer ") else ""
-        if not token_valid(config,token):
-            return JSONResponse({"detail":"Credencial inválida o vencida"},status_code=401)
         device=request.headers.get("x-gateway-device","")
         try:
             import uuid
@@ -57,6 +64,8 @@ def create_api(config=None, store=None):
         except ValueError:
             return JSONResponse({"detail":"Dispositivo inválido"},status_code=400)
         request.state.device=device
+        if request.url.path != '/api/gateway/pair' and not pairing.token_valid(token,device):
+            return JSONResponse({"detail":"Escaneá el QR de la PC para conectar este celular"},status_code=401)
         response=await call_next(request)
         response.headers["Cache-Control"]="no-store"
         return response
@@ -68,6 +77,10 @@ def create_api(config=None, store=None):
     @api.post("/api/gateway/heartbeat")
     def heartbeat(payload: Heartbeat, request: Request):
         return store.heartbeat(request.state.device,payload.active,payload.sim_label)
+
+    @api.post('/api/gateway/pair')
+    def redeem(payload: Pair, request: Request):
+        return pairing.redeem(payload.id,payload.secret,request.state.device)
 
     @api.post("/api/gateway/jobs/next")
     def next_job(request: Request):

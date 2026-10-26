@@ -84,13 +84,6 @@
     </div>
     {% endif %}
 
-    {% if recipients|length > recipient_limit %}
-    <div class="error">
-        El límite de prueba es {{ recipient_limit }}, pero este edificio tiene
-        {{ recipients|length }} destinatarios. La simulación está bloqueada.
-    </div>
-    {% endif %}
-
     {% if last_sync %}
     <p class="muted">
         Datos tomados de la copia SQLite sincronizada el {{ last_sync.completed_at }}.
@@ -111,6 +104,7 @@
             <input type="hidden" name="alert_type" value="{{ alert_type }}">
             <input type="hidden" name="technical_cause" value="{{ technical_cause }}">
             <input type="hidden" name="other_description" value="{{ other_description }}">
+            <input type="hidden" name="controlled_reason" value="{{ controlled_reason }}">
 
             <label class="checkbox-row">
                 <input type="checkbox" name="confirm_simulation" value="yes" required>
