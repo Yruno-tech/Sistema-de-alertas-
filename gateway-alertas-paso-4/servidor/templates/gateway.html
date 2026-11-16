@@ -1,24 +1,45 @@
 {% extends 'base.html' %}
 {% block title %}Enviar aviso · Programa de Alertas{% endblock %}
 {% block content %}
-<section class="card">
-  <p class="eyebrow">SMS DESDE LA PC · MODO PRUEBA</p><h1>Enviar un aviso</h1>
-  <div class="gateway-status"><strong id="phone-state">Comprobando celular…</strong> · <span id="sim-state">{{ control.sim_label }}</span></div>
-  <p id="sync-state">Comprobando destinatarios…</p>
-  <section id="readiness-panel" class="notice" aria-live="polite">
+<section class="card gateway-overview">
+  <div class="gateway-heading">
+    <div>
+      <p class="eyebrow">PRUEBA CON SMS REALES · MODO PRUEBA</p>
+      <h1>Enviar SMS desde la computadora</h1>
+      <p class="lead">Prepará el aviso y revisá la conexión antes de enviarlo desde la SIM institucional.</p>
+    </div>
+    <span class="gateway-mode">ENTORNO DE PRUEBA</span>
+  </div>
+  <div class="gateway-status-grid">
+    <div class="gateway-status-card">
+      <span class="gateway-status-label">Teléfono</span>
+      <strong id="phone-state">Comprobando celular…</strong>
+      <small id="sim-state">{{ control.sim_label or 'SIM sin informar' }}</small>
+    </div>
+    <div class="gateway-status-card">
+      <span class="gateway-status-label">Cola de envío</span>
+      <strong id="queue-state">Comprobando estado…</strong>
+      <small id="sync-state">Comprobando destinatarios…</small>
+    </div>
+  </div>
+  <section id="readiness-panel" class="readiness-panel" aria-live="polite">
     <h2>Comprobaciones antes de enviar</h2>
     <p id="readiness-summary">Verificando configuración, planilla y celular…</p>
     <ul id="readiness-checks"></ul>
   </section>
-  <div class="actions"><button id="pair-button" type="button" class="button-secondary">Conectar celular (QR)</button>
+  <div class="actions gateway-actions"><button id="pair-button" type="button" class="button-secondary">Conectar celular (QR)</button>
     <a href="/recipients">Ver destinatarios</a></div>
-  <section id="pair-panel" hidden aria-label="Emparejar celular">
+  <section id="pair-panel" class="pair-panel" hidden aria-label="Emparejar celular">
     <p>En el celular: <strong>Escanear QR</strong>. Este código permite vincular un teléfono durante 5 minutos.</p>
     <img id="pair-image" alt="Código QR para vincular el gateway" width="360" height="360" style="max-width:100%;height:auto">
     <p id="pair-detail" aria-live="polite"></p>
   </section>
 </section>
-<section class="card">
+<section class="card gateway-compose">
+  <div class="gateway-section-heading">
+    <span class="section-step">1</span>
+    <div><p class="eyebrow">PREPARACIÓN</p><h2>Configurar el aviso</h2></div>
+  </div>
   <form id="send-form">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <div class="gateway-fields">
@@ -42,8 +63,11 @@
       <p class="help-text">El límite se ajusta al edificio para que el SMS completo no supere 160 caracteres.
         <span id="controlled-reason-counter">0/160</span></p>
     </div>
-    <blockquote id="message-preview">Cargando mensaje…</blockquote>
-    <p><strong id="recipient-count">Calculando destinatarios…</strong> · <span id="segments"></span></p>
+    <div class="preview-panel">
+      <div class="preview-heading"><span class="eyebrow">MENSAJE</span><span id="segments"></span></div>
+      <blockquote id="message-preview">Cargando mensaje…</blockquote>
+    </div>
+    <div class="recipient-summary"><strong id="recipient-count">Calculando destinatarios…</strong></div>
     <p>Solo reciben SMS las personas con <strong>activo=SI y sms=SI</strong>. Quienes tienen sms=NO quedan excluidos.</p>
     <details><summary>Ver destinatarios incluidos</summary><ul id="recipient-list" class="gateway-recipient-list"></ul></details>
     <p id="send-feedback" role="status" aria-live="polite"></p>
@@ -51,8 +75,11 @@
     <p class="help-text">Este botón autoriza el envío de SMS reales con el texto mostrado.</p>
   </form>
 </section>
-<section class="card" id="batches">
-  <h2>Seguimiento</h2><p id="queue-state"></p>
+<section class="card gateway-followup" id="batches">
+  <div class="gateway-section-heading">
+    <span class="section-step">2</span>
+    <div><p class="eyebrow">ESTADO DE LOS ENVÍOS</p><h2>Seguimiento</h2></div>
+  </div>
   <div class="actions">
     <form method="post" action="/gateway/control"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="enabled" value="no"><button class="button-secondary">Pausar pendientes</button></form>
     <form method="post" action="/gateway/control"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="enabled" value="yes"><button class="button-secondary">Continuar pendientes</button></form>
@@ -71,7 +98,7 @@
   </article>{% else %}<p>Todavía no hay avisos enviados.</p>{% endfor %}
   <p>Un SMS que ya comenzó puede completarse después de detener. Un resultado desconocido pausa la cola sin reenviar ese SMS.</p>
 </section>
-<details class="card"><summary>Ajustes del envío</summary>
+<details class="card gateway-settings"><summary>Ajustes del envío</summary>
   <form method="post" action="/gateway/interval"><input type="hidden" name="csrf_token" value="{{ csrf }}">
     <label for="interval">Segundos mínimos entre SMS</label><input id="interval" name="seconds" type="number" min="1" max="60" value="{{ control.interval_seconds }}" required>
     <button class="button-secondary">Guardar intervalo</button>

@@ -112,6 +112,9 @@
       $('phone-state').textContent=connected?'Celular listo para recibir avisos':'Esperando al celular: abrí la app y activá el gateway';
       $('sim-state').textContent=data.control.sim_label || 'SIM sin informar';
       $('queue-state').textContent=data.control.enabled?'Cola habilitada':'Sin envío activo o pendientes pausados';
+      $('phone-state').classList.toggle('is-online',connected);
+      $('phone-state').classList.toggle('is-offline',!connected);
+      $('queue-state').classList.toggle('is-online',Boolean(data.control.enabled));
       const sync=data.last_sync;
       $('sync-state').textContent=sync ? `Última sincronización: ${new Date(sync.completed_at).toLocaleString()} · ${sync.accepted} registros válidos`+
         (sync.status==='failed'?' · No se pudo actualizar: revisá Destinatarios.':sync.rejected?` · ${sync.rejected} filas inválidas excluidas`:'') : 'La sincronización inicial está pendiente';
@@ -124,6 +127,7 @@
       $('readiness-panel').classList.toggle('error',Boolean(readiness && !preflightReady));
       $('readiness-checks').replaceChildren(...(readiness?.checks || []).map(check=>{
         const li=document.createElement('li');
+        li.className=check.ok?'readiness-check is-ready':'readiness-check is-blocked';
         const icon=document.createElement('strong');
         icon.textContent=check.ok?'✓ ':'✗ ';
         li.append(icon,document.createTextNode(`${check.label}: ${check.detail}`));
