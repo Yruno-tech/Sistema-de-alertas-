@@ -19,7 +19,7 @@
     <div class="config-grid">
         <div>
             <span>ID de planilla</span>
-            <strong>{{ "Configurado" if sheet_configured else "Falta en .env" }}</strong>
+            <strong>{{ "Configurado" if sheet_configured else "Falta configurar" }}</strong>
         </div>
         <div>
             <span>Rango</span>
@@ -40,6 +40,9 @@
 
     {% if credentials_error %}
     <div class="error">{{ credentials_error }}</div>
+    {% endif %}
+    {% if operator.role == 'admin' and (not sheet_configured or not credentials_ready) %}
+    <p><a href="/settings">Configurar Google Sheets y credenciales</a></p>
     {% endif %}
 
     {% if last_sync %}

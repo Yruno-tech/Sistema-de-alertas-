@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'gateway_controller.dart';
 
 void main() {
@@ -62,6 +63,43 @@ class _GatewayPageState extends State<GatewayPage> with WidgetsBindingObserver {
     ),
   );
 
+  Future<void> _scanPairingQr() async {
+    var handled = false;
+    final raw = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Escanear QR de la PC'),
+        content: SizedBox(
+          width: 320,
+          height: 320,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: MobileScanner(
+              onDetect: (capture) {
+                if (handled) return;
+                final value = capture.barcodes
+                    .map((barcode) => barcode.rawValue)
+                    .whereType<String>()
+                    .firstOrNull;
+                if (value == null) return;
+                handled = true;
+                Navigator.of(dialogContext).pop(value);
+              },
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancelar'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || raw == null) return;
+    await gateway.pairWithQr(raw);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Gateway de alertas')),
@@ -77,7 +115,7 @@ class _GatewayPageState extends State<GatewayPage> with WidgetsBindingObserver {
               padding: const EdgeInsets.all(16),
               children: [
                 const Text(
-                  'PRUEBA · HASTA 3 DESTINATARIOS',
+                  'PRUEBA · DESTINATARIOS HABILITADOS DESDE LA PC',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 12),
@@ -117,7 +155,7 @@ class _GatewayPageState extends State<GatewayPage> with WidgetsBindingObserver {
                   if (gateway.connection != null) ...[
                     const SizedBox(height: 8),
                     Text(
-                      'Números autorizados: ${gateway.connection!.allowedNumbers.map((n) => '…${n.substring(n.length - 4)}').join(', ')}',
+                      'La lista de destinatarios habilitados se administra en la PC.',
                     ),
                     Text(
                       'Vence: ${gateway.connection!.expiresAt.toLocal().toString().split('.').first}',
@@ -127,9 +165,9 @@ class _GatewayPageState extends State<GatewayPage> with WidgetsBindingObserver {
                   OutlinedButton.icon(
                     onPressed: gateway.active || gateway.busy
                         ? null
-                        : gateway.importConnection,
-                    icon: const Icon(Icons.file_open_outlined),
-                    label: const Text('Importar emparejar-gateway.json'),
+                        : _scanPairingQr,
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('Escanear QR'),
                   ),
                 ]),
                 card('2. Permisos y SIM institucional', [

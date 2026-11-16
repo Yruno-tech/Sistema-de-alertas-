@@ -32,8 +32,11 @@ class ConnectionVault(context: Context) {
     fun save(raw: String) {
         require(raw.length <= 16384) { "Archivo demasiado grande" }
         val json = JSONObject(raw)
-        require(json.getInt("version") == 1 && json.getString("mode") == "test") { "Configuración incompatible" }
-        require(json.getJSONArray("allowedNumbers").length() in 1..3) { "Se admiten hasta tres números" }
+        require(
+            json.getInt("version") == 2 &&
+                json.getString("mode") == "test" &&
+                json.getString("recipientPolicy") == "database"
+        ) { "Configuración incompatible" }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val encrypted = cipher.doFinal(raw.toByteArray(Charsets.UTF_8))
         check(preferences.edit().putString("cipher", Base64.encodeToString(encrypted, Base64.NO_WRAP))

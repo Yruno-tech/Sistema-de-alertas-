@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -10,13 +11,14 @@ import qrcode
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
-from config import settings
+from config import save_sheets_configuration, settings
 from gateway_config import load_gateway_config
 from gateway_pairing import PairingService
 from gateway_store import GatewayStore, QueueError
 from operator_accounts import AccountError, OperatorAccounts
 from service_account_upload import CredentialUploadError, save_service_account_json
 from sheets_service import SheetsConfigurationError, read_service_account_email
+from sync_service import synchronize
 from message_builder import (
     ALERT_TYPES,
     BUILDINGS,
@@ -96,23 +98,26 @@ def install_gateway(app, database, templates, service_account_file=None):
             }
             if request and request.state.operator['role'] == 'admin':
                 credential_check['action'] = {
-                    'label': 'Importar credencial', 'href': '/accounts',
+                    'label': 'Configurar credencial', 'href': '/settings',
                 }
             else:
-                credential_check['detail'] += ' Pedí a la administradora que la importe.'
+                credential_check['detail'] += ' Pedí a la administradora que la configure.'
             checks.append(credential_check)
 
-        sheet_ok = bool(settings.spreadsheet_id and settings.sheets_range)
+        current_settings = settings.snapshot()
+        sheet_ok = bool(
+            current_settings.spreadsheet_id and current_settings.sheets_range
+        )
         checks.append({
             'id': 'spreadsheet', 'label': 'Planilla configurada',
             'ok': sheet_ok,
             'detail': (
-                f'ID y rango configurados ({settings.sheets_range}).'
+                f'ID y rango configurados ({current_settings.sheets_range}).'
                 if sheet_ok else
-                'Falta GOOGLE_SHEETS_ID o GOOGLE_SHEETS_RANGE en el archivo .env del servidor.'
+                'Falta configurar el ID o el rango de Google Sheets.'
             ),
             **({} if sheet_ok else {
-                'action': {'label': 'Ver destinatarios y configuración', 'href': '/recipients'},
+                'action': {'label': 'Abrir configuración', 'href': '/settings'},
             }),
         })
 
@@ -130,7 +135,7 @@ def install_gateway(app, database, templates, service_account_file=None):
             'id': 'sync', 'label': 'Acceso y sincronización de Google Sheets',
             'ok': sync_ok, 'detail': sync_detail,
             **({} if sync_ok else {
-                'action': {'label': 'Revisar o sincronizar planilla', 'href': '/recipients'},
+                'action': {'label': 'Configurar o sincronizar planilla', 'href': '/settings'},
             }),
         })
 
@@ -149,17 +154,57 @@ def install_gateway(app, database, templates, service_account_file=None):
         })
         return {'ready': all(check['ok'] for check in checks), 'checks': checks}
 
-    def account_context(request, *, error=None, credential_error=None,
-                        credential_success=None):
+    def account_context(request, *, error=None):
         return {
             'request': request,
             'active_page': 'accounts',
             'error': error,
-            'credential_error': credential_error,
-            'credential_success': credential_success,
-            'credential_configured': credentials_path.is_file(),
             'users': accounts.list_users(),
             'operator': getattr(request.state, 'operator', None),
+        }
+
+    def configuration_context(
+        request,
+        *,
+        error=None,
+        saved=False,
+        sync_error=None,
+        sync_summary=None,
+        credential_error=None,
+        credential_success=None,
+        spreadsheet_id=None,
+        sheets_range=None,
+    ):
+        current_settings = settings.snapshot()
+        service_account_email = ''
+        credential_status = ''
+        try:
+            service_account_email = read_service_account_email(credentials_path)
+        except SheetsConfigurationError as credential_exception:
+            credential_status = str(credential_exception)
+        return {
+            'request': request,
+            'active_page': 'settings',
+            'operator': getattr(request.state, 'operator', None),
+            'csrf': request.state.operator['csrf_token'],
+            'spreadsheet_id': (
+                current_settings.spreadsheet_id
+                if spreadsheet_id is None else spreadsheet_id
+            ),
+            'sheets_range': (
+                current_settings.sheets_range
+                if sheets_range is None else sheets_range
+            ),
+            'service_account_email': service_account_email,
+            'credential_status': credential_status,
+            'credential_file_exists': credentials_path.is_file(),
+            'error': error,
+            'saved': saved,
+            'sync_error': sync_error,
+            'sync_summary': sync_summary,
+            'credential_error': credential_error,
+            'credential_success': credential_success,
+            'last_sync': database.get_last_sync(),
         }
 
     @router.get('/setup', response_class=HTMLResponse)
@@ -234,6 +279,55 @@ def install_gateway(app, database, templates, service_account_file=None):
             request=request, name='accounts.html', context=account_context(request),
         )
 
+    @router.get('/settings', response_class=HTMLResponse)
+    def settings_page(request: Request):
+        if request.state.operator['role'] != 'admin':
+            raise HTTPException(403, 'Solo la cuenta administradora puede configurar Google Sheets.')
+        return templates.TemplateResponse(
+            request=request,
+            name='settings.html',
+            context=configuration_context(request),
+        )
+
+    @router.post('/settings', response_class=HTMLResponse)
+    def save_settings(
+        request: Request,
+        csrf_token: str=Form(...),
+        spreadsheet_id: str=Form(..., max_length=512),
+        sheets_range: str=Form(..., max_length=256),
+    ):
+        if request.state.operator['role'] != 'admin':
+            raise HTTPException(403, 'Solo la cuenta administradora puede configurar Google Sheets.')
+        csrf(request, csrf_token)
+        try:
+            current_settings = save_sheets_configuration(
+                spreadsheet_id, sheets_range
+            )
+        except (OSError, ValueError) as error:
+            return templates.TemplateResponse(
+                request=request,
+                name='settings.html',
+                context=configuration_context(
+                    request,
+                    error=str(error),
+                    spreadsheet_id=spreadsheet_id,
+                    sheets_range=sheets_range,
+                ),
+                status_code=400,
+            )
+
+        _, summary, sync_error = synchronize(database, current_settings)
+        return templates.TemplateResponse(
+            request=request,
+            name='settings.html',
+            context=configuration_context(
+                request,
+                saved=True,
+                sync_error=sync_error,
+                sync_summary=summary,
+            ),
+        )
+
     @router.post('/accounts')
     def create_account(request: Request, csrf_token: str=Form(...),
                        username: str=Form(...), display_name: str=Form(...),
@@ -256,14 +350,14 @@ def install_gateway(app, database, templates, service_account_file=None):
             )
         return RedirectResponse('/accounts?created=1', status_code=303)
 
-    @router.post('/accounts/service-account', response_class=HTMLResponse)
+    @router.post('/settings/service-account', response_class=HTMLResponse)
     async def upload_service_account(
         request: Request,
         csrf_token: str=Form(...),
         credential_file: UploadFile=File(...),
     ):
         if request.state.operator['role'] != 'admin':
-            raise HTTPException(403, 'Solo la cuenta administradora puede importar credenciales.')
+            raise HTTPException(403, 'Solo la cuenta administradora puede configurar credenciales.')
         csrf(request, csrf_token)
         contents = await credential_file.read(1024 * 1024 + 1)
         await credential_file.close()
@@ -271,18 +365,25 @@ def install_gateway(app, database, templates, service_account_file=None):
             email = save_service_account_json(contents, credentials_path)
         except CredentialUploadError as error:
             return templates.TemplateResponse(
-                request=request, name='accounts.html',
-                context=account_context(request, credential_error=str(error)),
+                request=request,
+                name='settings.html',
+                context=configuration_context(request, credential_error=str(error)),
                 status_code=400,
             )
+        _, summary, sync_error = await asyncio.to_thread(
+            synchronize, database, settings.snapshot()
+        )
         return templates.TemplateResponse(
-            request=request, name='accounts.html',
-            context={
-                **account_context(request),
-                'credential_success': (
-                    f'Credencial de {email} importada. La sincronización de la hoja se reintentará automáticamente.'
+            request=request,
+            name='settings.html',
+            context=configuration_context(
+                request,
+                sync_error=sync_error,
+                sync_summary=summary,
+                credential_success=(
+                    f'Credencial de {email} importada. Se intentó sincronizar Google Sheets.'
                 ),
-            },
+            ),
         )
 
     @router.get('/gateway', response_class=HTMLResponse)

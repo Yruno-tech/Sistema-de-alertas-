@@ -8,6 +8,7 @@ environment:
   flutter: ">=3.35.0"
 
 dependencies:
+  crypto: ^3.0.8
   flutter:
     sdk: flutter
   mobile_scanner: ^7.4.2

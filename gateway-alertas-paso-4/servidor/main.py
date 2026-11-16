@@ -302,12 +302,13 @@ def simulate_alert(
 @app.get("/recipients", response_class=HTMLResponse)
 def recipients_page(request: Request) -> HTMLResponse:
     recipients = database.list_recipients()
+    current_settings = settings.snapshot()
     service_account_email = ""
     credentials_error = ""
 
     try:
         service_account_email = read_service_account_email(
-            settings.service_account_file
+            current_settings.service_account_file
         )
     except SheetsConfigurationError as exc:
         credentials_error = str(exc)
@@ -317,8 +318,10 @@ def recipients_page(request: Request) -> HTMLResponse:
         {
             "recipients": recipients,
             "last_sync": database.get_last_sync(),
-            "sheet_configured": bool(settings.spreadsheet_id),
-            "sheet_range": settings.sheets_range,
+            "sheet_configured": bool(
+                current_settings.spreadsheet_id and current_settings.sheets_range
+            ),
+            "sheet_range": current_settings.sheets_range,
             "credentials_ready": not credentials_error,
             "credentials_error": credentials_error,
             "service_account_email": service_account_email,

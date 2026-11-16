@@ -29,7 +29,7 @@ cd /d "C:\ruta\ProgramaAlertas"
 
 Si no existe `.venv`, crealo primero con `py -m venv .venv`. Requiere Python 3.11 o posterior. Las dependencias incluyen FastAPI, Jinja2, formularios, dotenv, cliente de Google, criptografía y **qrcode con Pillow**, que genera la imagen QR.
 
-En tu `.env`, verificá que el rango incluya la columna I, donde está `oficina`:
+Desde **Configuración** en el panel, la administradora puede guardar el ID o URL de la planilla y el rango A1 (debe incluir la columna I, donde está `oficina`). Si preferís configurar el servidor manualmente, verificá en `.env`:
 
 ```text
 GOOGLE_SHEETS_RANGE=DESTINATARIOS!A1:I
@@ -94,7 +94,7 @@ Queda en `build\app\outputs\flutter-apk\app-debug.apk`. Este ZIP contiene fuente
 2. En `ProgramaAlertas`, hacé doble clic en **INICIAR.bat**. Se abre el panel automáticamente. También podés ejecutar `.venv\Scripts\python.exe iniciar_gateway.py`.
 3. La primera vez, creá la cuenta administradora en el panel. Luego iniciá sesión; la contraseña debe tener al menos 12 caracteres.
 4. Si otras personas también usarán el panel, la administradora puede crearles cuentas individuales desde **Cuentas**. No compartan un mismo usuario: el nombre de quien inicia cada aviso queda registrado.
-5. Si falta la credencial de Google, desde **Cuentas** importá el JSON de la cuenta de servicio. Compartí la planilla con el `client_email` de esa cuenta como Lector; no envíes ni copies ese archivo al celular.
+5. Desde **Configuración**, guardá el ID/rango de Sheets e importá el JSON de la cuenta de servicio. El programa intenta sincronizar al guardar. Compartí la planilla con el `client_email` de esa cuenta como Lector; no envíes ni copies ese archivo al celular.
 6. Pulsá **Conectar celular (QR)**.
 7. En la app, pulsá **Escanear QR** y concedé permiso de cámara. Apuntá al QR de la PC.
 8. Concedé los permisos SMS/teléfono, seleccioná la SIM institucional y pulsá **Activar gateway**.
@@ -184,3 +184,9 @@ Si no conecta, comprobá que INICIAR siga abierto, PC y teléfono tengan comunic
 Las pantallas antiguas de simulación siguen disponibles desde el menú y no envían SMS. Para ordenar envíos reales de prueba usá `/gateway`, que abre INICIAR.
 
 Referencias: https://pub.dev/packages/mobile_scanner · https://pub.dev/packages/crypto · https://developer.android.com/reference/android/telephony/SmsManager
+
+## 8. Instalar el servidor en otra PC Windows
+
+Desde una PC Windows de 64 bits, dentro de `gateway-alertas-paso-4\servidor` ejecutá `.venv\Scripts\python.exe -m pip install -r requirements-dev.txt` y luego `.venv\Scripts\python.exe build_installer.py`. Se genera `dist\Instalar Gateway de alertas.exe`. Compartí únicamente ese ejecutable.
+
+En cada PC nueva, abrí el instalador con conexión a Internet. Descarga Python 3.14.10 desde python.org, verifica su SHA-256, instala las dependencias y crea un acceso directo en el Escritorio. No requiere permisos de administrador. El ejecutable no está firmado digitalmente y Windows puede mostrar una advertencia de SmartScreen. Cada servidor necesita su propio ID de Sheets, credenciales de Google y configuración; no compartas `.env`, `credentials`, `data` ni `.venv`. La app Android se instala aparte y se empareja por QR con ese servidor.

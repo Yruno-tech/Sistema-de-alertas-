@@ -81,7 +81,11 @@ class FakeServer extends GatewayTransport {
     Map<String, dynamic> body,
   ) async {
     if (path.endsWith('/heartbeat'))
-      return {'enabled': true, 'mode': 'test', 'max_recipients': 3};
+      return {
+        'enabled': true,
+        'protocol_version': 2,
+        'recipient_policy': 'database',
+      };
     if (path.endsWith('/next')) {
       if (reported) return {'job': null};
       reserved = true;

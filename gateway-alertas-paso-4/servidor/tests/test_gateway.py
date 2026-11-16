@@ -9,6 +9,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import pytest
+import config as app_config
+import gateway_web
+from dotenv import dotenv_values
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -380,6 +383,7 @@ def test_operator_accounts_authenticate_and_attribute_alerts(setup, tmp_path, mo
         assert response.status_code == 200
         assert 'Enviar ahora' in response.text
         assert operator.get('/accounts').status_code == 403
+        assert operator.get('/settings').status_code == 403
         csrf_token = re.search(
             r'name="csrf_token" value="([^"]+)"', response.text
         ).group(1)
@@ -435,7 +439,7 @@ def test_simulation_and_recipient_pages_require_login_and_hide_navigation(
         assert 'Simular' not in login_page.text
         assert 'Destinatarios' not in login_page.text
         assert 'Simulaciones' not in login_page.text
-        for path in ('/', '/recipients', '/history', '/gateway', '/accounts'):
+        for path in ('/', '/recipients', '/history', '/gateway', '/accounts', '/settings'):
             response = anonymous.get(path)
             assert response.status_code == 303
             assert response.headers['location'] == '/login'
@@ -471,6 +475,13 @@ def test_admin_can_import_service_account_json_without_replacing_on_error(
         app, db, Jinja2Templates(directory=BASE / 'templates'),
         service_account_file=credential_path,
     )
+    monkeypatch.setattr(
+        gateway_web,
+        'synchronize',
+        lambda database, current_settings: (
+            None, {'accepted': 2, 'rejected': 0}, None
+        ),
+    )
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_key_text = private_key.private_bytes(
         serialization.Encoding.PEM,
@@ -493,13 +504,15 @@ def test_admin_can_import_service_account_json_without_replacing_on_error(
     with TestClient(app, base_url='http://127.0.0.1:8000',
                     client=('127.0.0.1', 45000)) as client:
         _bootstrap_admin(client)
-        page = client.get('/accounts').text
-        assert 'Todavía no hay una clave' in page
+        accounts_page = client.get('/accounts').text
+        assert 'Credenciales de Google Sheets' not in accounts_page
+        page = client.get('/settings').text
+        assert 'No hay credenciales de una cuenta de servicio configuradas' in page
         csrf_token = re.search(
             r'name="csrf_token" value="([^"]+)"', page
         ).group(1)
         response = client.post(
-            '/accounts/service-account',
+            '/settings/service-account',
             data={'csrf_token': csrf_token},
             files={'credential_file': ('chosen-name.json', json.dumps(payload), 'application/json')},
             headers={'Origin': 'http://127.0.0.1:8000'},
@@ -510,7 +523,7 @@ def test_admin_can_import_service_account_json_without_replacing_on_error(
         assert json.loads(credential_path.read_text(encoding='utf-8')) == payload
 
         response = client.post(
-            '/accounts/service-account',
+            '/settings/service-account',
             data={'csrf_token': csrf_token},
             files={'credential_file': ('invalid.json', '{"type":"service_account"}', 'application/json')},
             headers={'Origin': 'http://127.0.0.1:8000'},
@@ -518,6 +531,93 @@ def test_admin_can_import_service_account_json_without_replacing_on_error(
         assert response.status_code == 400
         assert 'client_email y private_key' in response.text
         assert json.loads(credential_path.read_text(encoding='utf-8')) == payload
+
+
+def test_admin_can_save_sheet_configuration_and_sync_from_settings(
+        setup, tmp_path, monkeypatch):
+    db, _, _ = setup
+    configfile = tmp_path / 'gateway-config.json'
+    configfile.write_text(json.dumps({'version': 2, 'mode': 'test', 'csrf': 'unused'}))
+    monkeypatch.setenv('GATEWAY_CONFIG_FILE', str(configfile))
+    env_file = tmp_path / '.env'
+    env_file.write_text(
+        '# keep local values\n'
+        'APP_MODE=test\n'
+        'SMS_ENABLED=false\n'
+        'GOOGLE_SERVICE_ACCOUNT_FILE=credentials/service-account.json\n'
+        'DATABASE_PATH=data/alerts.db\n',
+        encoding='utf-8',
+    )
+    credential_path = tmp_path / 'credentials' / 'service-account.json'
+    configured_settings = app_config.Settings(
+        app_mode='test',
+        sms_enabled=False,
+        spreadsheet_id='',
+        sheets_range='DESTINATARIOS!A1:I',
+        service_account_file=credential_path,
+        database_path=db.path,
+    )
+    monkeypatch.setattr(app_config, 'DOTENV_PATH', env_file)
+    monkeypatch.setattr(app_config, 'settings', configured_settings)
+    monkeypatch.setattr(gateway_web, 'settings', configured_settings)
+    synchronized = []
+
+    def fake_synchronize(database, current_settings):
+        synchronized.append((database, current_settings))
+        return None, {'accepted': 2, 'rejected': 0}, None
+
+    monkeypatch.setattr(gateway_web, 'synchronize', fake_synchronize)
+    app = FastAPI()
+    app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+    install_gateway(
+        app, db, Jinja2Templates(directory=BASE / 'templates'),
+        service_account_file=credential_path,
+    )
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45001)) as client:
+        _bootstrap_admin(client)
+        page = client.get('/settings')
+        assert page.status_code == 200
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', page.text
+        ).group(1)
+        response = client.post(
+            '/settings',
+            data={
+                'csrf_token': csrf_token,
+                'spreadsheet_id': 'https://docs.google.com/spreadsheets/d/sheet_123abc/edit',
+                'sheets_range': 'DESTINATARIOS!A1:I',
+            },
+            headers={'Origin': 'http://127.0.0.1:8000'},
+        )
+        assert response.status_code == 200
+        invalid_response = client.post(
+            '/settings',
+            data={
+                'csrf_token': csrf_token,
+                'spreadsheet_id': 'esto no es un ID ni una URL',
+                'sheets_range': 'DESTINATARIOS!A1:I',
+            },
+            headers={'Origin': 'http://127.0.0.1:8000'},
+        )
+
+    assert 'Configuración guardada' in response.text
+    assert 'Sincronización correcta: 2 destinatarios válidos' in response.text
+    assert invalid_response.status_code == 400
+    assert 'no parece ser un ID ni una URL válida' in invalid_response.text
+    assert configured_settings.spreadsheet_id == 'sheet_123abc'
+    assert configured_settings.sheets_range == 'DESTINATARIOS!A1:I'
+    assert len(synchronized) == 1
+    assert synchronized[0][0] is db
+    assert synchronized[0][1].spreadsheet_id == 'sheet_123abc'
+    assert synchronized[0][1].sheets_range == 'DESTINATARIOS!A1:I'
+    saved_values = dotenv_values(env_file)
+    assert saved_values['GOOGLE_SHEETS_ID'] == 'sheet_123abc'
+    assert saved_values['GOOGLE_SHEETS_RANGE'] == 'DESTINATARIOS!A1:I'
+    assert saved_values['APP_MODE'] == 'test'
+    assert saved_values['DATABASE_PATH'] == 'data/alerts.db'
+    assert '# keep local values' in env_file.read_text(encoding='utf-8')
 
 
 def test_readiness_checks_block_sms_when_google_credential_is_missing(
@@ -543,7 +643,7 @@ def test_readiness_checks_block_sms_when_google_credential_is_missing(
         checks = {check['id']: check for check in status['readiness']['checks']}
         assert not status['readiness']['ready']
         assert not checks['credentials']['ok']
-        assert checks['credentials']['action']['href'] == '/accounts'
+        assert checks['credentials']['action']['href'] == '/settings'
         assert checks['spreadsheet']['ok']
         assert checks['sync']['ok']
         assert checks['phone']['ok']
@@ -607,7 +707,8 @@ def test_readiness_identifies_missing_spreadsheet_id_and_phone_connection(
         checks = {check['id']: check for check in status['readiness']['checks']}
         assert checks['credentials']['ok']
         assert not checks['spreadsheet']['ok']
-        assert '.env' in checks['spreadsheet']['detail']
+        assert 'Falta configurar' in checks['spreadsheet']['detail']
+        assert checks['spreadsheet']['action']['href'] == '/settings'
         assert checks['sync']['ok']
         assert not checks['phone']['ok']
         assert checks['phone']['action']['href'] == '#pair-button'

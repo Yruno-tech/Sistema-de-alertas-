@@ -18,7 +18,7 @@ class GatewayController extends ChangeNotifier {
   GatewayTransport? _api;
   bool active = false, connected = false, remoteEnabled = false, busy = false;
   bool _foreground = true, _disposed = false;
-  String message = 'Importá el archivo generado en la computadora.';
+  String message = 'Escaneá el código QR generado en la computadora.';
   Map<String, dynamic> permissions = {};
   List<Map<String, dynamic>> sims = [], recent = [];
   int? simId;
@@ -55,26 +55,31 @@ class GatewayController extends ChangeNotifier {
     }
   }
 
-  Future<void> _connect(GatewayConnection config) async {
-    final device = (await platform.call<String>('deviceId'))!;
+  Future<void> _connect(
+    GatewayConnection config, {
+    String? knownDeviceId,
+  }) async {
+    final device = knownDeviceId ?? (await platform.call<String>('deviceId'))!;
     final api = transportFactory(
       config,
       device,
-    ); // Validate the imported certificate before saving.
+    ); // Validate the server certificate before saving the credential.
     await platform.call<void>('saveConnection', {'json': config.raw});
     connection = config;
     _api = api;
     connected = false;
-    message = 'Emparejamiento cargado. Elegí la SIM y activá el gateway.';
+    message = 'Emparejamiento seguro. Elegí la SIM y activá el gateway.';
   }
 
-  Future<void> importConnection() async {
+  Future<void> pairWithQr(String raw) async {
     if (busy || active) return;
     busy = true;
     changed();
     try {
-      final raw = await platform.call<String>('importConnection');
-      if (raw != null) await _connect(GatewayConnection.parse(raw));
+      final pairing = GatewayPairingRequest.parse(raw);
+      final device = (await platform.call<String>('deviceId'))!;
+      final config = await pairing.redeem(device);
+      await _connect(config, knownDeviceId: device);
     } catch (error) {
       message = describe(error);
     } finally {
@@ -191,8 +196,10 @@ class GatewayController extends ChangeNotifier {
       });
       connected = true;
       remoteEnabled = heartbeat['enabled'] == true;
-      if (heartbeat['mode'] != 'test' || heartbeat['max_recipients'] != 3)
+      if (heartbeat['protocol_version'] != 2 ||
+          heartbeat['recipient_policy'] != config.recipientPolicy) {
         throw StateError('El servidor no está en modo de prueba compatible');
+      }
       if (active && _foreground && remoteEnabled) {
         final pending =
             await platform.call<List<Object?>>('prepared', {
@@ -291,7 +298,7 @@ class GatewayController extends ChangeNotifier {
     if (error is PlatformException)
       return error.message ?? 'Android rechazó la operación';
     if (error is HandshakeException)
-      return 'No se pudo verificar el certificado de la PC. Revisá el archivo importado y la fecha del teléfono.';
+      return 'No se pudo verificar el certificado de la PC. Escaneá un QR vigente de esa PC y revisá la fecha del teléfono.';
     if (error is SocketException || error is TimeoutException)
       return 'Sin conexión con la PC. Revisá Wi-Fi, servidor y firewall. Los SMS iniciados no se reenvían.';
     if (error is GatewayApiError) return error.message;

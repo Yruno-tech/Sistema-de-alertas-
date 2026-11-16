@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+{% block title %}Configuración · Programa de Alertas{% endblock %}
+{% block content %}
+<section class="card wide-card">
+  <p class="eyebrow">ADMINISTRACIÓN</p>
+  <h1>Configuración</h1>
+  <p>Configurá la planilla de Google Sheets y la cuenta de servicio que usa este servidor.</p>
+
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if saved %}<p class="success" role="status">Configuración guardada.</p>{% endif %}
+  {% if sync_summary %}
+  <p class="success" role="status">
+    Sincronización correcta: {{ sync_summary.accepted }} destinatarios válidos.
+    {% if sync_summary.rejected %}{{ sync_summary.rejected }} filas fueron excluidas.{% endif %}
+  </p>
+  {% elif sync_error %}
+  <p class="error" role="alert">La configuración se guardó, pero no se pudo sincronizar: {{ sync_error }}</p>
+  {% endif %}
+
+  <h2>Google Sheets</h2>
+  <form method="post" action="/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label for="spreadsheet-id">ID o URL de la planilla</label>
+    <input id="spreadsheet-id" name="spreadsheet_id" type="text" maxlength="512"
+      value="{{ spreadsheet_id }}" autocomplete="off" required>
+    <label for="sheets-range">Rango de lectura</label>
+    <input id="sheets-range" name="sheets_range" type="text" maxlength="256"
+      value="{{ sheets_range }}" placeholder="DESTINATARIOS!A1:I" required>
+    <p class="muted">
+      Incluí los encabezados y la columna oficina, por ejemplo
+      <code>DESTINATARIOS!A1:I</code>. Podés pegar la URL completa de Google Sheets;
+      el programa guardará su ID.
+    </p>
+    <button type="submit">Guardar y sincronizar ahora</button>
+  </form>
+
+  <h2>Cuenta de servicio</h2>
+  {% if service_account_email %}
+  <div class="notice">
+    Credencial configurada para <code>{{ service_account_email }}</code>.
+    Compartí la planilla con esta cuenta como <strong>Lector</strong>.
+  </div>
+  {% else %}
+  {% if credential_file_exists %}
+  <p class="error">La credencial guardada no es válida: {{ credential_status }}</p>
+  {% else %}
+  <p class="warning">No hay credenciales de una cuenta de servicio configuradas.</p>
+  {% if credential_status %}<p class="muted">{{ credential_status }}</p>{% endif %}
+  {% endif %}
+  {% endif %}
+  {% if credential_error %}<p class="error" role="alert">{{ credential_error }}</p>{% endif %}
+  {% if credential_success %}<p class="success" role="status">{{ credential_success }}</p>{% endif %}
+  <p>El archivo se guarda localmente en esta computadora. No se envía al teléfono ni se incluye en el instalador.</p>
+  <form method="post" action="/settings/service-account" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label for="credential-file">Archivo JSON de la cuenta de servicio</label>
+    <input id="credential-file" name="credential_file" type="file"
+      accept=".json,application/json" required>
+    <button type="submit">Guardar credencial y sincronizar</button>
+  </form>
+
+  {% if last_sync %}
+  <div class="compact-status">
+    <span>Último intento</span>
+    <strong>{{ last_sync.completed_at }}</strong>
+    <span class="status-pill {{ last_sync.status }}">{{ last_sync.status }}</span>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

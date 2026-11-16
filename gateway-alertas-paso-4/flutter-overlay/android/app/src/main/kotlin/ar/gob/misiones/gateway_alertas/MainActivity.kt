@@ -1,7 +1,6 @@
 package ar.gob.misiones.gateway_alertas
 
 import android.Manifest
-import android.app.Activity
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -19,7 +18,6 @@ import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
-    private var importResult: MethodChannel.Result? = null
     private var resumed = false
     private val journal by lazy { SmsJournal(applicationContext) }
     private val vault by lazy { ConnectionVault(applicationContext) }
@@ -41,8 +39,7 @@ class MainActivity : FlutterActivity() {
     override fun onPause() { resumed = false; super.onPause() }
     override fun onDestroy() {
         permissionResult?.error("CLOSED", "Se cerró la solicitud de permisos", null)
-        importResult?.error("CLOSED", "Se cerró la selección del archivo", null)
-        permissionResult = null; importResult = null
+        permissionResult = null
         journal.close()
         super.onDestroy()
     }
@@ -69,15 +66,6 @@ class MainActivity : FlutterActivity() {
             "deviceId" -> result.success(vault.deviceId())
             "loadConnection" -> result.success(vault.load())
             "saveConnection" -> { vault.save(string("json")); result.success(null) }
-            "importConnection" -> {
-                check(importResult == null) { "Ya hay un selector abierto" }
-                importResult = result
-                try {
-                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
-                    }, 6202)
-                } catch (error: Exception) { importResult = null; throw error }
-            }
             "requestPermissions" -> {
                 check(permissionResult == null) { "Ya se están solicitando permisos" }
                 val missing = arrayOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_PHONE_STATE)
@@ -113,14 +101,21 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun validateJob(job: JSONObject, serverId: String) {
-        val config = JSONObject(requireNotNull(vault.load()) { "Importá el archivo de emparejamiento" })
-        require(config.getString("serverId") == serverId && config.getString("mode") == "test") { "Servidor o modo inválido" }
+        val config = JSONObject(requireNotNull(vault.load()) { "Escaneá el QR de emparejamiento" })
+        require(
+            config.getInt("version") == 2 &&
+                config.getString("serverId") == serverId &&
+                config.getString("mode") == "test" &&
+                config.getString("recipientPolicy") == "database"
+        ) { "Servidor o modo inválido" }
         require(config.getDouble("expiresAt") * 1000 > System.currentTimeMillis()) { "El emparejamiento venció" }
-        require(job.getString("mode") == "test") { "Solo se admiten pruebas" }
+        require(
+            job.getString("mode") == "test" &&
+                job.getInt("protocol_version") == 2 &&
+                job.getString("recipient_policy") == "database"
+        ) { "Solo se admiten pruebas del protocolo 2" }
         require(job.getDouble("expires_at") * 1000 > System.currentTimeMillis()) { "La orden de envío venció" }
         val phone = job.getString("phone")
-        val allowed = config.getJSONArray("allowedNumbers")
-        require(allowed.length() in 1..3 && (0 until allowed.length()).any { allowed.getString(it) == phone }) { "Destinatario no autorizado" }
         require(Regex("^\\+549[0-9]{10}$").matches(phone)) { "Número inválido" }
         for (field in listOf("id", "batch_id", "ticket"))
             require(Regex("^[a-f0-9-]{36}$").matches(job.getString(field))) { "Identificador inválido" }
@@ -168,26 +163,4 @@ class MainActivity : FlutterActivity() {
         if (code == 6201) { permissionResult?.success(status()); permissionResult = null }
     }
 
-    @Deprecated("Activity result bridge for Flutter without third-party plugins")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != 6202) return
-        val result = importResult ?: return
-        importResult = null
-        if (resultCode != Activity.RESULT_OK || data?.data == null) { result.success(null); return }
-        try {
-            val bytes = contentResolver.openInputStream(data.data!!)?.use { stream ->
-                val output = java.io.ByteArrayOutputStream()
-                val buffer = ByteArray(1024)
-                while (true) {
-                    val count = stream.read(buffer)
-                    if (count < 0) break
-                    require(output.size() + count <= 16384) { "El archivo supera 16 KB" }
-                    output.write(buffer, 0, count)
-                }
-                output.toByteArray()
-            } ?: error("Archivo inaccesible")
-            result.success(String(bytes, Charsets.UTF_8))
-        } catch (_: Exception) { result.error("IMPORT", "No se pudo leer el archivo de emparejamiento (máximo 16 KB)", null) }
-    }
 }

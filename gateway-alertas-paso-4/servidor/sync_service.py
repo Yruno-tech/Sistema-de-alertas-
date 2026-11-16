@@ -11,8 +11,9 @@ _sync_lock = threading.Lock()
 
 def synchronize(database, settings):
     with _sync_lock:
+        current_settings = settings.snapshot()
         try:
-            result = validate_sheet_values(read_sheet_values(settings))
+            result = validate_sheet_values(read_sheet_values(current_settings))
             summary = database.sync_recipients(result)
             return result, summary, None
         except (SheetsConfigurationError, SheetsReadError, HeaderValidationError, SyncSafetyError) as error:
@@ -23,6 +24,7 @@ def synchronize(database, settings):
 async def auto_sync(database, settings):
     interval = max(5, int(os.getenv('SHEETS_SYNC_SECONDS', '15')))
     while True:
-        if settings.spreadsheet_id and settings.service_account_file.exists():
-            await asyncio.to_thread(synchronize, database, settings)
+        current_settings = settings.snapshot()
+        if current_settings.spreadsheet_id and current_settings.service_account_file.exists():
+            await asyncio.to_thread(synchronize, database, current_settings)
         await asyncio.sleep(interval)

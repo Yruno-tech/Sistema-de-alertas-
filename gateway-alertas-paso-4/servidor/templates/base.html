@@ -25,7 +25,10 @@
         </nav>
         <div class="operator-tools">
             <span>{{ operator.display_name }} · {{ operator.username }}</span>
-            {% if operator.role == 'admin' %}<a href="/accounts">Cuentas</a>{% endif %}
+            {% if operator.role == 'admin' %}
+            <a href="/settings" {% if active_page == 'settings' %}class="active"{% endif %}>Configuración</a>
+            <a href="/accounts" {% if active_page == 'accounts' %}class="active"{% endif %}>Cuentas</a>
+            {% endif %}
             <form method="post" action="/logout">
                 <input type="hidden" name="csrf_token" value="{{ operator.csrf_token }}">
                 <button type="submit" class="button-secondary">Cerrar sesión</button>
