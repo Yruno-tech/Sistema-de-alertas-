@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from gateway_config import load_gateway_config
 from gateway_pairing import PairingService
 from gateway_store import GatewayStore, QueueError
+from operator_accounts import AccountError, OperatorAccounts
 from message_builder import (
     ALERT_TYPES,
     BUILDINGS,
@@ -30,6 +31,8 @@ def initialize_gateway(database):
 
 def install_gateway(app, database, templates):
     router = APIRouter()
+    accounts = OperatorAccounts(database.path)
+    accounts.initialize()
 
     @app.middleware('http')
     async def operator_boundary(request: Request, call_next):
@@ -39,6 +42,21 @@ def install_gateway(app, database, templates):
         if request.method not in ('GET','HEAD','OPTIONS'):
             if request.headers.get('origin') != f"{request.url.scheme}://{request.headers.get('host','')}":
                 return PlainTextResponse('Origen del formulario inválido.',status_code=403)
+        path = request.url.path
+        is_public_page = path in ('/setup', '/login', '/health') or path.startswith('/static/')
+        if not is_public_page:
+            if not accounts.has_users():
+                if path.startswith('/gateway/'):
+                    return JSONResponse({'detail':'Creá la cuenta administradora para continuar.'},
+                                        status_code=401)
+                return RedirectResponse('/setup', status_code=303)
+            operator = accounts.get_session(request.cookies.get('operator_session'))
+            if not operator:
+                if path.startswith('/gateway/'):
+                    return JSONResponse({'detail':'La sesión venció. Iniciá sesión nuevamente.'},
+                                        status_code=401)
+                return RedirectResponse('/login', status_code=303)
+            request.state.operator = operator
         response = await call_next(request)
         response.headers.update({'X-Frame-Options':'DENY','X-Content-Type-Options':'nosniff',
                                  'Referrer-Policy':'same-origin','Cache-Control':'no-store'})
@@ -50,16 +68,121 @@ def install_gateway(app, database, templates):
             raise HTTPException(503,'Iniciá el programa con python iniciar_gateway.py')
         return config, GatewayStore(database.path)
 
-    def csrf(config, value):
-        if not secrets.compare_digest(config['csrf'],value):
+    def csrf(request, value):
+        operator = getattr(request.state, 'operator', None)
+        if not operator or not secrets.compare_digest(operator['csrf_token'], value):
             raise HTTPException(403,'Recargá la página para actualizar el formulario')
+
+    def account_context(request, *, error=None):
+        return {
+            'request': request,
+            'active_page': 'accounts',
+            'error': error,
+            'users': accounts.list_users(),
+            'operator': getattr(request.state, 'operator', None),
+        }
+
+    @router.get('/setup', response_class=HTMLResponse)
+    def setup_page(request: Request):
+        if accounts.get_session(request.cookies.get('operator_session')):
+            return RedirectResponse('/gateway', status_code=303)
+        if accounts.has_users():
+            return RedirectResponse('/login', status_code=303)
+        return templates.TemplateResponse(
+            request=request, name='account_setup.html',
+            context={'request': request, 'error': None},
+        )
+
+    @router.post('/setup')
+    def setup_account(request: Request, username: str=Form(...), display_name: str=Form(...),
+                      password: str=Form(...), password_confirm: str=Form(...)):
+        if accounts.has_users():
+            return RedirectResponse('/login', status_code=303)
+        if password != password_confirm:
+            return templates.TemplateResponse(
+                request=request, name='account_setup.html',
+                context={'request': request, 'error': 'Las contraseñas no coinciden.'},
+                status_code=400,
+            )
+        try:
+            user_id = accounts.create_initial_admin(username, display_name, password)
+        except AccountError as error:
+            return templates.TemplateResponse(
+                request=request, name='account_setup.html',
+                context={'request': request, 'error': str(error)}, status_code=400,
+            )
+        return _create_login_response(accounts, user_id)
+
+    @router.get('/login', response_class=HTMLResponse)
+    def login_page(request: Request):
+        if accounts.get_session(request.cookies.get('operator_session')):
+            return RedirectResponse('/gateway', status_code=303)
+        if not accounts.has_users():
+            return RedirectResponse('/setup', status_code=303)
+        return templates.TemplateResponse(
+            request=request, name='account_login.html',
+            context={'request': request, 'error': None},
+        )
+
+    @router.post('/login')
+    def login(request: Request, username: str=Form(...), password: str=Form(...)):
+        if not accounts.has_users():
+            return RedirectResponse('/setup', status_code=303)
+        user = accounts.authenticate(username, password)
+        if not user:
+            return templates.TemplateResponse(
+                request=request, name='account_login.html',
+                context={'request': request, 'error': 'Usuario o contraseña incorrectos.'},
+                status_code=401,
+            )
+        return _create_login_response(accounts, user['id'])
+
+    @router.post('/logout')
+    def logout(request: Request, csrf_token: str=Form(...)):
+        csrf(request, csrf_token)
+        token = request.cookies.get('operator_session')
+        accounts.revoke_session(token)
+        response = RedirectResponse('/login', status_code=303)
+        response.delete_cookie('operator_session', path='/', httponly=True, samesite='strict')
+        return response
+
+    @router.get('/accounts', response_class=HTMLResponse)
+    def account_list(request: Request):
+        if request.state.operator['role'] != 'admin':
+            raise HTTPException(403, 'Solo la cuenta administradora puede crear usuarios.')
+        return templates.TemplateResponse(
+            request=request, name='accounts.html', context=account_context(request),
+        )
+
+    @router.post('/accounts')
+    def create_account(request: Request, csrf_token: str=Form(...),
+                       username: str=Form(...), display_name: str=Form(...),
+                       password: str=Form(...), password_confirm: str=Form(...)):
+        if request.state.operator['role'] != 'admin':
+            raise HTTPException(403, 'Solo la cuenta administradora puede crear usuarios.')
+        csrf(request, csrf_token)
+        if password != password_confirm:
+            return templates.TemplateResponse(
+                request=request, name='accounts.html',
+                context=account_context(request, error='Las contraseñas no coinciden.'),
+                status_code=400,
+            )
+        try:
+            accounts.create_operator(username, display_name, password)
+        except AccountError as error:
+            return templates.TemplateResponse(
+                request=request, name='accounts.html',
+                context=account_context(request, error=str(error)), status_code=400,
+            )
+        return RedirectResponse('/accounts?created=1', status_code=303)
 
     @router.get('/gateway', response_class=HTMLResponse)
     def panel(request: Request):
         config, store = resources()
         return templates.TemplateResponse(request=request,name='gateway.html',context={
             'request':request,'active_page':'gateway','buildings':BUILDINGS,'alert_types':ALERT_TYPES,
-            'technical_causes':TECHNICAL_CAUSES,'csrf':config['csrf'],**store.dashboard()})
+            'technical_causes':TECHNICAL_CAUSES,'csrf':request.state.operator['csrf_token'],
+            'operator':request.state.operator,**store.dashboard()})
 
     @router.get('/gateway/status')
     def status():
@@ -90,25 +213,30 @@ def install_gateway(app, database, templates):
             return JSONResponse({'detail':str(error)},status_code=400)
 
     @router.post('/gateway/send')
-    def send(csrf_token: str=Form(...),request_id: str=Form(...),snapshot: str=Form(...),
-             building_id: str=Form(...),alert_type: str=Form(...),office: str=Form(''),
+    def send(request: Request, csrf_token: str=Form(...),request_id: str=Form(...),
+             snapshot: str=Form(...),building_id: str=Form(...),alert_type: str=Form(...),office: str=Form(''),
              technical_cause: str=Form(''),other_description: str=Form(''),
              controlled_reason: str=Form('')):
         config, store = resources()
-        csrf(config,csrf_token)
+        csrf(request,csrf_token)
         try:
             message = build_message(
                 building_id, alert_type, technical_cause, other_description, controlled_reason
             ).message
-            batch = store.enqueue(building_id,office or None,message,request_id,snapshot)
+            operator = request.state.operator
+            batch = store.enqueue(
+                building_id,office or None,message,request_id,snapshot,
+                actor_user_id=operator['id'], actor_username=operator['username'],
+                actor_name=operator['display_name'],
+            )
             return {'batch_id':batch}
         except ValueError as error:
             return JSONResponse({'detail':str(error)},status_code=409)
 
     @router.post('/gateway/pairing')
-    def pairing(csrf_token: str=Form(...)):
+    def pairing(request: Request, csrf_token: str=Form(...)):
         config, _ = resources()
-        csrf(config,csrf_token)
+        csrf(request,csrf_token)
         service = PairingService(database.path,config)
         payload = service.issue()
         image = qrcode.make(json.dumps(payload,separators=(',',':')),box_size=7,border=4)
@@ -118,23 +246,37 @@ def install_gateway(app, database, templates):
                 'expires_at':payload['expiresAt'],'url':payload['url']}
 
     @router.post('/gateway/control')
-    def control(csrf_token: str=Form(...),enabled: str=Form(...)):
-        config, store = resources(); csrf(config,csrf_token)
+    def control(request: Request, csrf_token: str=Form(...),enabled: str=Form(...)):
+        config, store = resources(); csrf(request,csrf_token)
         if enabled not in ('yes','no'): raise HTTPException(400,'Acción inválida')
-        store.set_enabled(enabled=='yes')
+        operator=request.state.operator
+        store.set_enabled(enabled=='yes',actor_user_id=operator['id'],actor_username=operator['username'])
         return RedirectResponse('/gateway#batches',status_code=303)
 
     @router.post('/gateway/interval')
-    def interval(csrf_token: str=Form(...),seconds: int=Form(...)):
-        config, store = resources(); csrf(config,csrf_token)
-        try: store.set_interval(seconds)
+    def interval(request: Request, csrf_token: str=Form(...),seconds: int=Form(...)):
+        config, store = resources(); csrf(request,csrf_token)
+        operator=request.state.operator
+        try:
+            store.set_interval(seconds,actor_user_id=operator['id'],actor_username=operator['username'])
         except QueueError as error: raise HTTPException(400,str(error))
         return RedirectResponse('/gateway',status_code=303)
 
     @router.post('/gateway/batches/{batch_id}/stop')
-    def stop(batch_id: str,csrf_token: str=Form(...)):
-        config, store = resources(); csrf(config,csrf_token)
-        store.stop(batch_id)
+    def stop(request: Request, batch_id: str,csrf_token: str=Form(...)):
+        config, store = resources(); csrf(request,csrf_token)
+        operator=request.state.operator
+        store.stop(batch_id,actor_user_id=operator['id'],actor_username=operator['username'])
         return RedirectResponse('/gateway#batches',status_code=303)
 
     app.include_router(router)
+
+
+def _create_login_response(accounts, user_id):
+    token, _ = accounts.create_session(user_id)
+    response = RedirectResponse('/gateway', status_code=303)
+    response.set_cookie(
+        'operator_session', token, max_age=12 * 60 * 60, httponly=True,
+        samesite='strict', secure=False, path='/',
+    )
+    return response

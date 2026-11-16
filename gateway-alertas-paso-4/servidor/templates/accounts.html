@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}Cuentas · Programa de Alertas{% endblock %}
+{% block content %}
+<section class="card wide-card">
+  <p class="eyebrow">ADMINISTRACIÓN</p>
+  <h1>Cuentas del panel</h1>
+  <p>Creá una cuenta individual para cada persona que pueda preparar y enviar avisos. Las contraseñas no se muestran ni se guardan en texto legible.</p>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if request.query_params.get('created') %}<p class="success" role="status">Cuenta creada. Compartí el usuario y la contraseña de forma segura.</p>{% endif %}
+  <h2>Crear operador</h2>
+  <form method="post" action="/accounts">
+    <input type="hidden" name="csrf_token" value="{{ operator.csrf_token }}">
+    <label for="display-name">Nombre</label>
+    <input id="display-name" name="display_name" type="text" maxlength="80" autocomplete="name" required>
+    <label for="username">Usuario</label>
+    <input id="username" name="username" type="text" minlength="3" maxlength="32"
+      pattern="[A-Za-z0-9._-]+" autocomplete="off" required>
+    <label for="password">Contraseña inicial (mínimo 12 caracteres)</label>
+    <input id="password" name="password" type="password" minlength="12" maxlength="256"
+      autocomplete="new-password" required>
+    <label for="password-confirm">Repetir contraseña</label>
+    <input id="password-confirm" name="password_confirm" type="password" minlength="12"
+      maxlength="256" autocomplete="new-password" required>
+    <button type="submit">Crear cuenta de operador</button>
+  </form>
+  <h2>Cuentas existentes</h2>
+  <div class="table-wrapper">
+    <table>
+      <thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Estado</th></tr></thead>
+      <tbody>{% for user in users %}
+        <tr><td>{{ user.display_name }}</td><td>{{ user.username }}</td>
+          <td>{{ 'Administradora' if user.role == 'admin' else 'Operador' }}</td>
+          <td>{{ 'Activa' if user.active else 'Desactivada' }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

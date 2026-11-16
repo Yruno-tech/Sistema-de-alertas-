@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -49,6 +50,24 @@ def queued(store, office=None):
     batch = store.preview('edificio-anexo', office, MESSAGE)
     store.confirm(batch)
     return batch
+
+
+def _bootstrap_admin(client):
+    response = client.post(
+        '/setup',
+        data={
+            'display_name': 'Administradora',
+            'username': 'admin',
+            'password': 'contrasena-segura-123',
+            'password_confirm': 'contrasena-segura-123',
+        },
+        headers={'Origin': 'http://127.0.0.1:8000'},
+    )
+    assert response.status_code == 200
+    assert 'Enviar ahora' in response.text
+    match = re.search(r'name="csrf_token" value="([^"]+)"', response.text)
+    assert match
+    return match.group(1)
 
 
 def test_office_migration_preserves_existing_data_and_filters(setup):
@@ -234,9 +253,10 @@ def test_local_panel_preview_confirm_tracking_and_csrf(setup, tmp_path, monkeypa
     app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
     install_gateway(app, db, Jinja2Templates(directory=BASE / 'templates'))
     with TestClient(app, base_url='http://127.0.0.1:8000', client=('127.0.0.1', 45000)) as client:
+        csrf_token = _bootstrap_admin(client)
         html=client.get('/gateway').text
         assert 'Enviar ahora' in html and 'CONFIRMAR' not in html
-        form = {'csrf_token': 'csrf-test', 'building_id': 'edificio-anexo', 'alert_type': 'maintenance', 'office': 'Informática'}
+        form = {'csrf_token': csrf_token, 'building_id': 'edificio-anexo', 'alert_type': 'maintenance', 'office': 'Informática'}
         assert client.post('/gateway/send', data=form).status_code == 403
         response = client.get('/gateway/quote', params={k:v for k,v in form.items() if k!='csrf_token'})
         assert response.status_code == 200
@@ -247,6 +267,7 @@ def test_local_panel_preview_confirm_tracking_and_csrf(setup, tmp_path, monkeypa
         response = client.post('/gateway/send',data=form,
                                headers={'Origin': 'http://127.0.0.1:8000'})
         assert response.status_code == 200
+        assert store.batch(batch)['sender'] == 'Administradora (admin)'
         assert client.post('/gateway/send',data=form,headers={'Origin':'http://127.0.0.1:8000'}).json()['batch_id'] == batch
         assert client.get('/gateway/status').json()['batches'][0]['counts']['QUEUED'] == 1
     with TestClient(app, base_url='http://evil.example', client=('127.0.0.1', 45000)) as client:
@@ -265,6 +286,7 @@ def test_gateway_controlled_alert_requires_reason_and_limits_sms(setup, tmp_path
     install_gateway(app, db, Jinja2Templates(directory=BASE / 'templates'))
 
     with TestClient(app, base_url='http://127.0.0.1:8000', client=('127.0.0.1', 45000)) as client:
+        csrf_token = _bootstrap_admin(client)
         html = client.get('/gateway').text
         assert 'Alarma de Situación Controlada' in html
         assert 'Motivo por el que se da por finalizada la alerta' in html
@@ -295,7 +317,7 @@ def test_gateway_controlled_alert_requires_reason_and_limits_sms(setup, tmp_path
 
         form = {
             **values,
-            'csrf_token': 'csrf-test',
+            'csrf_token': csrf_token,
             'request_id': str(uuid.uuid4()),
             'snapshot': quote.json()['snapshot'],
         }
@@ -316,6 +338,122 @@ def test_gateway_controlled_alert_requires_reason_and_limits_sms(setup, tmp_path
 
         values['controlled_reason'] = 'x' * (max_chars + 1)
         assert client.get('/gateway/quote', params=values).status_code == 400
+
+
+def test_operator_accounts_authenticate_and_attribute_alerts(setup, tmp_path, monkeypatch):
+    db, store, _ = setup
+    configfile = tmp_path / 'gateway-config.json'
+    configfile.write_text(json.dumps({'version': 2, 'mode': 'test', 'csrf': 'unused'}))
+    monkeypatch.setenv('GATEWAY_CONFIG_FILE', str(configfile))
+    app = FastAPI()
+    app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+    install_gateway(app, db, Jinja2Templates(directory=BASE / 'templates'))
+    origin = {'Origin': 'http://127.0.0.1:8000'}
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45000)) as admin:
+        assert admin.get('/gateway/status').status_code == 401
+        admin_csrf = _bootstrap_admin(admin)
+        response = admin.post(
+            '/accounts',
+            data={
+                'csrf_token': admin_csrf,
+                'display_name': 'Operadora de turno',
+                'username': 'operadora1',
+                'password': 'contrasena-operadora-123',
+                'password_confirm': 'contrasena-operadora-123',
+            },
+            headers=origin,
+        )
+        assert response.status_code == 200
+        assert 'Operadora de turno' in response.text
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45001)) as operator:
+        response = operator.post(
+            '/login',
+            data={'username': 'operadora1', 'password': 'contrasena-operadora-123'},
+            headers=origin,
+        )
+        assert response.status_code == 200
+        assert 'Enviar ahora' in response.text
+        assert operator.get('/accounts').status_code == 403
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', response.text
+        ).group(1)
+        quote = operator.get('/gateway/quote', params={
+            'building_id': 'edificio-anexo',
+            'alert_type': 'maintenance',
+            'office': 'Informática',
+        })
+        assert quote.status_code == 200
+        request_id = str(uuid.uuid4())
+        sent = operator.post('/gateway/send', data={
+            'csrf_token': csrf_token,
+            'request_id': request_id,
+            'snapshot': quote.json()['snapshot'],
+            'building_id': 'edificio-anexo',
+            'alert_type': 'maintenance',
+            'office': 'Informática',
+        }, headers=origin)
+        assert sent.status_code == 200
+        assert store.batch(request_id)['sender'] == 'Operadora de turno (operadora1)'
+        with sqlite3.connect(db.path) as connection:
+            audit = connection.execute(
+                "SELECT actor_username FROM gateway_audit WHERE action='SEND_NOW' AND batch_id=?",
+                (request_id,),
+            ).fetchone()
+        assert audit == ('operadora1',)
+
+
+def test_simulation_and_recipient_pages_require_login_and_hide_navigation(
+        setup, tmp_path, monkeypatch):
+    db, _, _ = setup
+    configfile = tmp_path / 'gateway-config.json'
+    configfile.write_text(json.dumps({'version': 2, 'mode': 'test', 'csrf': 'unused'}))
+    monkeypatch.setenv('GATEWAY_CONFIG_FILE', str(configfile))
+    app = FastAPI()
+    app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+    install_gateway(app, db, Jinja2Templates(directory=BASE / 'templates'))
+    origin = {'Origin': 'http://127.0.0.1:8000'}
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45000)) as admin:
+        setup_page = admin.get('/setup')
+        assert setup_page.status_code == 200
+        assert 'Simular' not in setup_page.text
+        assert 'Destinatarios' not in setup_page.text
+        assert 'Simulaciones' not in setup_page.text
+        _bootstrap_admin(admin)
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45001), follow_redirects=False) as anonymous:
+        login_page = anonymous.get('/login')
+        assert login_page.status_code == 200
+        assert 'Simular' not in login_page.text
+        assert 'Destinatarios' not in login_page.text
+        assert 'Simulaciones' not in login_page.text
+        for path in ('/', '/recipients', '/history', '/gateway', '/accounts'):
+            response = anonymous.get(path)
+            assert response.status_code == 303
+            assert response.headers['location'] == '/login'
+        for path in ('/simulate', '/recipients/sync'):
+            response = anonymous.post(path, headers=origin)
+            assert response.status_code == 303
+            assert response.headers['location'] == '/login'
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45002)) as logged_in:
+        logged_in.post(
+            '/login',
+            data={'username': 'admin', 'password': 'contrasena-segura-123'},
+            headers=origin,
+        )
+        panel = logged_in.get('/gateway')
+        assert panel.status_code == 200
+        assert 'Simular' in panel.text
+        assert 'Destinatarios' in panel.text
+        assert 'Simulaciones' in panel.text
 
 
 def test_pairing_generates_trusted_certificate_without_google_access(tmp_path):

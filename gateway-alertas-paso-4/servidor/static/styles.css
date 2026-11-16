@@ -80,6 +80,22 @@ nav a.active {
     color: #174ea6;
 }
 
+.operator-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #4d5d73;
+    font-size: 0.85rem;
+}
+
+.operator-tools form {
+    display: block;
+}
+
+.operator-tools button {
+    padding: 8px 10px;
+}
+
 .page-shell {
     min-height: calc(100vh - 72px);
     padding: 32px 16px;
@@ -475,6 +491,13 @@ blockquote { margin: 18px 0; padding: 16px 20px; border-left: 4px solid #257c73;
         order: 3;
         width: 100%;
         overflow-x: auto;
+    }
+
+    .operator-tools {
+        order: 4;
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
     }
 
     .page-shell {

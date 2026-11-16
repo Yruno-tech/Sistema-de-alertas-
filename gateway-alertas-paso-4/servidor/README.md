@@ -8,6 +8,8 @@ El instalador conserva `.env`, `credentials`, `data` y `.venv`. El rango de Shee
 
 `/gateway` envía SMS reales con prefijo PRUEBA cuando pulsás Enviar ahora y el celular está activo. Las rutas antiguas `/`, `/history` y las simulaciones siguen sin enviar SMS ni correo. `/recipients` muestra la copia local y permite sincronización manual. Se mantiene `APP_MODE=test` y `SMS_ENABLED=false` para esas pantallas antiguas.
 
+Al primer acceso se crea una cuenta administradora. Esa cuenta agrega operadores desde **Cuentas**; hace falta iniciar sesión para acceder a cualquier pantalla, incluidas Simular, Destinatarios e Historial. Sin sesión, se ocultan las opciones y se redirige al inicio de sesión. Cada envío conserva el nombre y usuario que lo inició. Las contraseñas se guardan como hash y las sesiones vencen a las 12 horas. El panel continúa limitado a la computadora local.
+
 El tipo **Alarma de Situación Controlada** requiere un motivo y limita su longitud según el edificio para que el mensaje completo no supere los 160 caracteres de un SMS.
 
 No almacenes las credenciales de Google en el teléfono. El QR ya entrega a la app su propio emparejamiento, sin transferir archivos manualmente.

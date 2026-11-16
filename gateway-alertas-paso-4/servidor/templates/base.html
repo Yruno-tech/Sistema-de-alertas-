@@ -16,12 +16,22 @@
                 <small>Prototipo institucional</small>
             </span>
         </a>
+        {% if operator %}
         <nav aria-label="Navegación principal">
             <a href="/gateway" {% if active_page == 'gateway' %}class="active"{% endif %}>Enviar SMS desde PC</a>
             <a href="/" {% if active_page == 'alert' %}class="active"{% endif %}>Simular</a>
             <a href="/recipients" {% if active_page == 'recipients' %}class="active"{% endif %}>Destinatarios</a>
             <a href="/history" {% if active_page == 'history' %}class="active"{% endif %}>Simulaciones</a>
         </nav>
+        <div class="operator-tools">
+            <span>{{ operator.display_name }} · {{ operator.username }}</span>
+            {% if operator.role == 'admin' %}<a href="/accounts">Cuentas</a>{% endif %}
+            <form method="post" action="/logout">
+                <input type="hidden" name="csrf_token" value="{{ operator.csrf_token }}">
+                <button type="submit" class="button-secondary">Cerrar sesión</button>
+            </form>
+        </div>
+        {% endif %}
         <span class="mode-badge">MODO PRUEBA</span>
     </div>
 </header>

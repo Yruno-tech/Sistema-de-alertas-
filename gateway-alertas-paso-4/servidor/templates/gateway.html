@@ -54,7 +54,8 @@
   </div>
   {% for batch in batches %}<article class="gateway-batch">
     <h3>Aviso {{ batch.id[:8] }} · {{ buildings[batch.building_id].label }}</h3>
-    <p>{{ batch.office or 'Todas las oficinas' }} · <span data-batch-state="{{ batch.id }}">{{ batch.status }}</span></p>
+    <p>{{ batch.office or 'Todas las oficinas' }} · <span data-batch-state="{{ batch.id }}">{{ batch.status }}</span>
+      · Enviado por <strong>{{ batch.sender }}</strong></p>
     <blockquote>{{ batch.message }}</blockquote><p data-counts="{{ batch.id }}"></p>
     <details><summary>Resultados por destinatario ({{ batch.jobs|length }})</summary>
       <div class="table-wrapper"><table><thead><tr><th>Persona</th><th>Teléfono</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>

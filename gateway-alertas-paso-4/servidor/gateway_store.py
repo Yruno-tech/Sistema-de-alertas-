@@ -57,7 +57,9 @@ class GatewayStore:
               id TEXT PRIMARY KEY, building_id TEXT NOT NULL, office TEXT,
               message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'DRAFT',
               created_at REAL NOT NULL, expires_at REAL NOT NULL,
-              confirmed_at REAL, preview_sync_id INTEGER NOT NULL);
+              confirmed_at REAL, preview_sync_id INTEGER NOT NULL,
+              created_by_user_id INTEGER, created_by_username TEXT NOT NULL DEFAULT '',
+              created_by_name TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS gateway_jobs (
               id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES gateway_batches(id),
               recipient_id INTEGER NOT NULL, recipient_name TEXT NOT NULL,
@@ -70,15 +72,35 @@ class GatewayStore:
             CREATE INDEX IF NOT EXISTS gateway_jobs_status ON gateway_jobs(status,updated_at);
             CREATE TABLE IF NOT EXISTS gateway_audit (
               id INTEGER PRIMARY KEY, at REAL NOT NULL, job_id TEXT, batch_id TEXT,
-              action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
+              action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+              actor_user_id INTEGER, actor_username TEXT NOT NULL DEFAULT '');
             """)
             columns = {r[1] for r in db.execute('PRAGMA table_info(gateway_control)')}
             if 'interval_seconds' not in columns:
                 db.execute('ALTER TABLE gateway_control ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 2')
+            batch_columns = {r[1] for r in db.execute('PRAGMA table_info(gateway_batches)')}
+            for name, definition in (
+                ('created_by_user_id', 'INTEGER'),
+                ('created_by_username', "TEXT NOT NULL DEFAULT ''"),
+                ('created_by_name', "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if name not in batch_columns:
+                    db.execute(f'ALTER TABLE gateway_batches ADD COLUMN {name} {definition}')
+            audit_columns = {r[1] for r in db.execute('PRAGMA table_info(gateway_audit)')}
+            for name, definition in (
+                ('actor_user_id', 'INTEGER'),
+                ('actor_username', "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if name not in audit_columns:
+                    db.execute(f'ALTER TABLE gateway_audit ADD COLUMN {name} {definition}')
 
-    def _audit(self, db, action, *, job_id=None, batch_id=None, detail=""):
-        db.execute("INSERT INTO gateway_audit(at,job_id,batch_id,action,detail) VALUES(?,?,?,?,?)",
-                   (self.clock(), job_id, batch_id, action, detail[:250]))
+    def _audit(self, db, action, *, job_id=None, batch_id=None, detail="",
+               actor_user_id=None, actor_username=""):
+        db.execute("""INSERT INTO gateway_audit
+            (at,job_id,batch_id,action,detail,actor_user_id,actor_username)
+            VALUES(?,?,?,?,?,?,?)""",
+                   (self.clock(), job_id, batch_id, action, detail[:250],
+                    actor_user_id, actor_username[:32]))
 
     def _housekeeping(self, db):
         now = self.clock()
@@ -114,11 +136,13 @@ class GatewayStore:
             enabled = bool(db.execute("SELECT enabled FROM gateway_control WHERE id=1").fetchone()[0])
         return {"enabled": enabled, "mode": "test", "protocol_version": 2, "recipient_policy": "database"}
 
-    def set_interval(self, seconds):
+    def set_interval(self, seconds, *, actor_user_id=None, actor_username=""):
         if not 1 <= seconds <= 60:
             raise QueueError('El intervalo debe estar entre 1 y 60 segundos')
         with self.transaction() as db:
             db.execute('UPDATE gateway_control SET interval_seconds=? WHERE id=1', (seconds,))
+            self._audit(db, "SET_INTERVAL", detail=f"{seconds} segundos",
+                        actor_user_id=actor_user_id, actor_username=actor_username)
 
     def _recipients(self, db, building_id, office):
         sync = db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
@@ -151,7 +175,8 @@ class GatewayStore:
         if not SAFE_TEXT.fullmatch(message) or len(message) > 160:
             raise QueueError('El mensaje debe ser de prueba y ocupar un segmento')
 
-    def enqueue(self, building_id, office, message, request_id, snapshot):
+    def enqueue(self, building_id, office, message, request_id, snapshot, *,
+                actor_user_id=None, actor_username="", actor_name=""):
         """One operator click; one atomic snapshot and durable idempotency key."""
         self._validate_message(message)
         try:
@@ -177,21 +202,26 @@ class GatewayStore:
             now = self.clock()
             expiry = now + max(BATCH_TTL, len(rows)*(control['interval_seconds']+15)+300)
             db.execute("""INSERT INTO gateway_batches
-              (id,building_id,office,message,status,created_at,expires_at,confirmed_at,preview_sync_id)
-              VALUES(?,?,?,?,'QUEUED',?,?,?,?)""", (request_id,building_id,office,message,now,expiry,now,sync['id']))
+              (id,building_id,office,message,status,created_at,expires_at,confirmed_at,preview_sync_id,
+               created_by_user_id,created_by_username,created_by_name)
+              VALUES(?,?,?,?,'QUEUED',?,?,?,?,?,?,?)""",
+                       (request_id,building_id,office,message,now,expiry,now,sync['id'],
+                        actor_user_id,actor_username[:32],actor_name[:80]))
             for row in rows:
                 db.execute("""INSERT INTO gateway_jobs
                   (id,batch_id,recipient_id,recipient_name,phone,office,status,updated_at)
                   VALUES(?,?,?,?,?,?,'QUEUED',?)""", (str(uuid.uuid4()),request_id,row['id'],row['name'],row['phone'],row['office'],now))
             db.execute('UPDATE gateway_control SET enabled=1 WHERE id=1')
-            self._audit(db, 'SEND_NOW', batch_id=request_id, detail=f'{len(rows)} destinatarios')
+            self._audit(db, 'SEND_NOW', batch_id=request_id, detail=f'{len(rows)} destinatarios',
+                        actor_user_id=actor_user_id, actor_username=actor_username)
         return request_id
 
-    def set_enabled(self, enabled):
+    def set_enabled(self, enabled, *, actor_user_id=None, actor_username=""):
         with self.transaction() as db:
             self._housekeeping(db)
             db.execute("UPDATE gateway_control SET enabled=? WHERE id=1", (int(enabled),))
-            self._audit(db, "ENABLE" if enabled else "PAUSE")
+            self._audit(db, "ENABLE" if enabled else "PAUSE",
+                        actor_user_id=actor_user_id, actor_username=actor_username)
 
     def preview(self, building_id, office, message):
         if not SAFE_TEXT.fullmatch(message) or len(message) > 160:
@@ -256,12 +286,13 @@ class GatewayStore:
             db.execute("UPDATE gateway_jobs SET status='QUEUED',updated_at=? WHERE batch_id=?", (now,batch_id))
             self._audit(db, "CONFIRM", batch_id=batch_id)
 
-    def stop(self, batch_id):
+    def stop(self, batch_id, *, actor_user_id=None, actor_username=""):
         with self.transaction() as db:
             db.execute("UPDATE gateway_batches SET status='STOPPED' WHERE id=?", (batch_id,))
             db.execute("""UPDATE gateway_jobs SET status='CANCELLED',detail='Detenido desde la PC',updated_at=?
               WHERE batch_id=? AND status IN ('DRAFT','QUEUED','CLAIMED')""", (self.clock(),batch_id))
-            self._audit(db, "STOP", batch_id=batch_id)
+            self._audit(db, "STOP", batch_id=batch_id,
+                        actor_user_id=actor_user_id, actor_username=actor_username)
 
     def next_job(self, device_id):
         with self.transaction() as db:
@@ -351,6 +382,12 @@ class GatewayStore:
                 batch["counts"]={status:sum(j["status"]==status for j in jobs) for status in
                                  ("DRAFT","QUEUED","CLAIMED","STARTED","SENT","DELIVERED","FAILED","UNKNOWN","CANCELLED")}
             control["connected"]=control["last_seen"] >= self.clock()-15 and bool(control["active"])
+            for batch in batches:
+                batch["sender"] = (
+                    f"{batch['created_by_name']} ({batch['created_by_username']})"
+                    if batch["created_by_username"]
+                    else "Anterior al registro de cuentas"
+                )
             return {"control":control, "batches":batches}
 
     def batch(self, batch_id):

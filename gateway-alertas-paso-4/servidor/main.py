@@ -67,6 +67,7 @@ install_gateway(app, database, templates)
 def common_context(request: Request, *, active_page: str) -> dict[str, object]:
     return {
         "request": request,
+        "operator": getattr(request.state, "operator", None),
         "active_page": active_page,
         "app_mode": settings.app_mode,
         "sms_enabled": settings.sms_enabled,
