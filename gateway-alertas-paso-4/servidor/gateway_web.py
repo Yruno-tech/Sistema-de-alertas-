@@ -4,15 +4,19 @@ import base64
 import io
 import json
 import secrets
+from pathlib import Path
 
 import qrcode
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
+from config import settings
 from gateway_config import load_gateway_config
 from gateway_pairing import PairingService
 from gateway_store import GatewayStore, QueueError
 from operator_accounts import AccountError, OperatorAccounts
+from service_account_upload import CredentialUploadError, save_service_account_json
+from sheets_service import SheetsConfigurationError, read_service_account_email
 from message_builder import (
     ALERT_TYPES,
     BUILDINGS,
@@ -29,9 +33,10 @@ def initialize_gateway(database):
         PairingService(database.path,config).initialize()
 
 
-def install_gateway(app, database, templates):
+def install_gateway(app, database, templates, service_account_file=None):
     router = APIRouter()
     accounts = OperatorAccounts(database.path)
+    credentials_path = Path(service_account_file or settings.service_account_file)
     accounts.initialize()
 
     @app.middleware('http')
@@ -73,11 +78,86 @@ def install_gateway(app, database, templates):
         if not operator or not secrets.compare_digest(operator['csrf_token'], value):
             raise HTTPException(403,'Recargá la página para actualizar el formulario')
 
-    def account_context(request, *, error=None):
+    def readiness(store, request=None):
+        dashboard = store.dashboard()
+        last_sync = database.get_last_sync()
+        checks = []
+
+        try:
+            read_service_account_email(credentials_path)
+            checks.append({
+                'id': 'credentials', 'label': 'Credencial de Google',
+                'ok': True, 'detail': 'Archivo de cuenta de servicio encontrado y válido.',
+            })
+        except SheetsConfigurationError as error:
+            credential_check = {
+                'id': 'credentials', 'label': 'Credencial de Google',
+                'ok': False, 'detail': str(error),
+            }
+            if request and request.state.operator['role'] == 'admin':
+                credential_check['action'] = {
+                    'label': 'Importar credencial', 'href': '/accounts',
+                }
+            else:
+                credential_check['detail'] += ' Pedí a la administradora que la importe.'
+            checks.append(credential_check)
+
+        sheet_ok = bool(settings.spreadsheet_id and settings.sheets_range)
+        checks.append({
+            'id': 'spreadsheet', 'label': 'Planilla configurada',
+            'ok': sheet_ok,
+            'detail': (
+                f'ID y rango configurados ({settings.sheets_range}).'
+                if sheet_ok else
+                'Falta GOOGLE_SHEETS_ID o GOOGLE_SHEETS_RANGE en el archivo .env del servidor.'
+            ),
+            **({} if sheet_ok else {
+                'action': {'label': 'Ver destinatarios y configuración', 'href': '/recipients'},
+            }),
+        })
+
+        sync_ok = bool(last_sync and last_sync['status'] in ('success', 'success_with_errors'))
+        if sync_ok:
+            sync_detail = (
+                f"Sincronización válida: {last_sync['accepted']} registros."
+                + (f" {last_sync['rejected']} filas excluidas." if last_sync['rejected'] else '')
+            )
+        elif last_sync and last_sync.get('error_message'):
+            sync_detail = f"Último error: {last_sync['error_message']}"
+        else:
+            sync_detail = 'Todavía no hay una sincronización correcta con Google Sheets.'
+        checks.append({
+            'id': 'sync', 'label': 'Acceso y sincronización de Google Sheets',
+            'ok': sync_ok, 'detail': sync_detail,
+            **({} if sync_ok else {
+                'action': {'label': 'Revisar o sincronizar planilla', 'href': '/recipients'},
+            }),
+        })
+
+        phone_ok = bool(dashboard['control']['connected'])
+        checks.append({
+            'id': 'phone', 'label': 'Celular gateway conectado',
+            'ok': phone_ok,
+            'detail': (
+                'El celular está activo y responde al servidor.'
+                if phone_ok else
+                'Abrí la app Android, conectala por QR si hace falta y pulsá Activar gateway.'
+            ),
+            **({} if phone_ok else {
+                'action': {'label': 'Conectar celular (QR)', 'href': '#pair-button'},
+            }),
+        })
+        return {'ready': all(check['ok'] for check in checks), 'checks': checks}
+
+    def account_context(request, *, error=None, credential_error=None,
+                        credential_success=None):
         return {
             'request': request,
             'active_page': 'accounts',
             'error': error,
+            'credential_error': credential_error,
+            'credential_success': credential_success,
+            'credential_configured': credentials_path.is_file(),
             'users': accounts.list_users(),
             'operator': getattr(request.state, 'operator', None),
         }
@@ -176,6 +256,35 @@ def install_gateway(app, database, templates):
             )
         return RedirectResponse('/accounts?created=1', status_code=303)
 
+    @router.post('/accounts/service-account', response_class=HTMLResponse)
+    async def upload_service_account(
+        request: Request,
+        csrf_token: str=Form(...),
+        credential_file: UploadFile=File(...),
+    ):
+        if request.state.operator['role'] != 'admin':
+            raise HTTPException(403, 'Solo la cuenta administradora puede importar credenciales.')
+        csrf(request, csrf_token)
+        contents = await credential_file.read(1024 * 1024 + 1)
+        await credential_file.close()
+        try:
+            email = save_service_account_json(contents, credentials_path)
+        except CredentialUploadError as error:
+            return templates.TemplateResponse(
+                request=request, name='accounts.html',
+                context=account_context(request, credential_error=str(error)),
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request=request, name='accounts.html',
+            context={
+                **account_context(request),
+                'credential_success': (
+                    f'Credencial de {email} importada. La sincronización de la hoja se reintentará automáticamente.'
+                ),
+            },
+        )
+
     @router.get('/gateway', response_class=HTMLResponse)
     def panel(request: Request):
         config, store = resources()
@@ -185,10 +294,11 @@ def install_gateway(app, database, templates):
             'operator':request.state.operator,**store.dashboard()})
 
     @router.get('/gateway/status')
-    def status():
+    def status(request: Request):
         _, store = resources()
         data = store.dashboard()
         data['last_sync'] = database.get_last_sync()
+        data['readiness'] = readiness(store, request)
         return data
 
     @router.get('/gateway/reason-limit')
@@ -219,6 +329,13 @@ def install_gateway(app, database, templates):
              controlled_reason: str=Form('')):
         config, store = resources()
         csrf(request,csrf_token)
+        current_readiness = readiness(store, request)
+        if not current_readiness['ready']:
+            first_problem = next(check for check in current_readiness['checks'] if not check['ok'])
+            return JSONResponse(
+                {'detail': f"No se puede enviar todavía. {first_problem['label']}: {first_problem['detail']}"},
+                status_code=409,
+            )
         try:
             message = build_message(
                 building_id, alert_type, technical_cause, other_description, controlled_reason

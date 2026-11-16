@@ -29,10 +29,10 @@ def read_service_account_email(credentials_file: Path) -> str:
         ) from exc
 
     email = str(payload.get("client_email", "")).strip()
-    if not email:
+    if payload.get("type") != "service_account" or not email or not payload.get("private_key"):
         raise SheetsConfigurationError(
-            "El JSON no contiene client_email y no parece ser una clave "
-            "de cuenta de servicio válida."
+            "El JSON debe ser una clave de cuenta de servicio y contener "
+            "client_email y private_key."
         )
     return email
 

@@ -94,9 +94,10 @@ Queda en `build\app\outputs\flutter-apk\app-debug.apk`. Este ZIP contiene fuente
 2. En `ProgramaAlertas`, hacé doble clic en **INICIAR.bat**. Se abre el panel automáticamente. También podés ejecutar `.venv\Scripts\python.exe iniciar_gateway.py`.
 3. La primera vez, creá la cuenta administradora en el panel. Luego iniciá sesión; la contraseña debe tener al menos 12 caracteres.
 4. Si otras personas también usarán el panel, la administradora puede crearles cuentas individuales desde **Cuentas**. No compartan un mismo usuario: el nombre de quien inicia cada aviso queda registrado.
-5. Pulsá **Conectar celular (QR)**.
-6. En la app, pulsá **Escanear QR** y concedé permiso de cámara. Apuntá al QR de la PC.
-7. Concedé los permisos SMS/teléfono, seleccioná la SIM institucional y pulsá **Activar gateway**.
+5. Si falta la credencial de Google, desde **Cuentas** importá el JSON de la cuenta de servicio. Compartí la planilla con el `client_email` de esa cuenta como Lector; no envíes ni copies ese archivo al celular.
+6. Pulsá **Conectar celular (QR)**.
+7. En la app, pulsá **Escanear QR** y concedé permiso de cámara. Apuntá al QR de la PC.
+8. Concedé los permisos SMS/teléfono, seleccioná la SIM institucional y pulsá **Activar gateway**.
 
 El panel debe mostrar **Celular listo para recibir avisos**. La conexión y la SIM elegida quedan guardadas; no necesitás volver a escanear en cada inicio. El QR vence en cinco minutos y vincula un teléfono. Generá otro si vence. No hace falta copiar archivos JSON ni escribir tokens.
 Las cuentas se guardan en la base local del servidor; las contraseñas se almacenan con hash y las sesiones vencen a las 12 horas. El panel sigue limitado a esta PC: las cuentas distinguen a las personas que la usan, no habilitan acceso remoto.

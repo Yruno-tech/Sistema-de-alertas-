@@ -5,6 +5,8 @@ import sqlite3
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 import pytest
 from fastapi import FastAPI
@@ -454,6 +456,161 @@ def test_simulation_and_recipient_pages_require_login_and_hide_navigation(
         assert 'Simular' in panel.text
         assert 'Destinatarios' in panel.text
         assert 'Simulaciones' in panel.text
+
+
+def test_admin_can_import_service_account_json_without_replacing_on_error(
+        setup, tmp_path, monkeypatch):
+    db, _, _ = setup
+    configfile = tmp_path / 'gateway-config.json'
+    configfile.write_text(json.dumps({'version': 2, 'mode': 'test', 'csrf': 'unused'}))
+    monkeypatch.setenv('GATEWAY_CONFIG_FILE', str(configfile))
+    credential_path = tmp_path / 'credentials' / 'service-account.json'
+    app = FastAPI()
+    app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+    install_gateway(
+        app, db, Jinja2Templates(directory=BASE / 'templates'),
+        service_account_file=credential_path,
+    )
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_key_text = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    payload = {
+        'type': 'service_account',
+        'project_id': 'alertas-test',
+        'private_key_id': 'test-key-id',
+        'private_key': private_key_text,
+        'client_email': 'sheets-reader@alertas-test.iam.gserviceaccount.com',
+        'client_id': '123456789',
+        'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+        'token_uri': 'https://oauth2.googleapis.com/token',
+        'auth_provider_x509_cert_url': 'https://www.googleapis.com/oauth2/v1/certs',
+        'client_x509_cert_url': 'https://www.googleapis.com/robot/v1/metadata/x509/sheets-reader',
+    }
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45000)) as client:
+        _bootstrap_admin(client)
+        page = client.get('/accounts').text
+        assert 'Todavía no hay una clave' in page
+        csrf_token = re.search(
+            r'name="csrf_token" value="([^"]+)"', page
+        ).group(1)
+        response = client.post(
+            '/accounts/service-account',
+            data={'csrf_token': csrf_token},
+            files={'credential_file': ('chosen-name.json', json.dumps(payload), 'application/json')},
+            headers={'Origin': 'http://127.0.0.1:8000'},
+        )
+        assert response.status_code == 200
+        assert 'Credencial de sheets-reader@alertas-test.iam.gserviceaccount.com importada' in response.text
+        assert private_key_text not in response.text
+        assert json.loads(credential_path.read_text(encoding='utf-8')) == payload
+
+        response = client.post(
+            '/accounts/service-account',
+            data={'csrf_token': csrf_token},
+            files={'credential_file': ('invalid.json', '{"type":"service_account"}', 'application/json')},
+            headers={'Origin': 'http://127.0.0.1:8000'},
+        )
+        assert response.status_code == 400
+        assert 'client_email y private_key' in response.text
+        assert json.loads(credential_path.read_text(encoding='utf-8')) == payload
+
+
+def test_readiness_checks_block_sms_when_google_credential_is_missing(
+        setup, tmp_path, monkeypatch):
+    db, _, _ = setup
+    configfile = tmp_path / 'gateway-config.json'
+    configfile.write_text(json.dumps({'version': 2, 'mode': 'test', 'csrf': 'unused'}))
+    monkeypatch.setenv('GATEWAY_CONFIG_FILE', str(configfile))
+    missing_credential = tmp_path / 'credentials' / 'missing-service-account.json'
+    app = FastAPI()
+    app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+    install_gateway(
+        app, db, Jinja2Templates(directory=BASE / 'templates'),
+        service_account_file=missing_credential,
+    )
+    origin = {'Origin': 'http://127.0.0.1:8000'}
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45000)) as client:
+        csrf_token = _bootstrap_admin(client)
+        page = client.get('/gateway').text
+        status = client.get('/gateway/status').json()
+        checks = {check['id']: check for check in status['readiness']['checks']}
+        assert not status['readiness']['ready']
+        assert not checks['credentials']['ok']
+        assert checks['credentials']['action']['href'] == '/accounts'
+        assert checks['spreadsheet']['ok']
+        assert checks['sync']['ok']
+        assert checks['phone']['ok']
+
+        quote = client.get('/gateway/quote', params={
+            'building_id': 'edificio-anexo',
+            'alert_type': 'maintenance',
+            'office': 'Informática',
+        })
+        response = client.post('/gateway/send', data={
+            'csrf_token': csrf_token,
+            'request_id': str(uuid.uuid4()),
+            'snapshot': quote.json()['snapshot'],
+            'building_id': 'edificio-anexo',
+            'alert_type': 'maintenance',
+            'office': 'Informática',
+        }, headers=origin)
+        assert response.status_code == 409
+        assert 'Credencial de Google' in response.json()['detail']
+        assert not db.get_last_sync()['status'] == 'failed'
+
+
+def test_readiness_identifies_missing_spreadsheet_id_and_phone_connection(
+        setup, tmp_path, monkeypatch):
+    from dataclasses import replace
+    import gateway_web
+
+    db, _, _ = setup
+    configfile = tmp_path / 'gateway-config.json'
+    configfile.write_text(json.dumps({'version': 2, 'mode': 'test', 'csrf': 'unused'}))
+    monkeypatch.setenv('GATEWAY_CONFIG_FILE', str(configfile))
+    monkeypatch.setattr(
+        gateway_web, 'settings',
+        replace(gateway_web.settings, spreadsheet_id=''),
+    )
+    credential_path = tmp_path / 'credentials' / 'service-account.json'
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    credential_path.parent.mkdir(parents=True)
+    credential_path.write_text(json.dumps({
+        'type': 'service_account',
+        'client_email': 'sheets-reader@alertas-test.iam.gserviceaccount.com',
+        'private_key': private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+    }), encoding='utf-8')
+    with db.connect() as connection:
+        connection.execute('UPDATE gateway_control SET active=0 WHERE id=1')
+    app = FastAPI()
+    app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
+    install_gateway(
+        app, db, Jinja2Templates(directory=BASE / 'templates'),
+        service_account_file=credential_path,
+    )
+
+    with TestClient(app, base_url='http://127.0.0.1:8000',
+                    client=('127.0.0.1', 45000)) as client:
+        _bootstrap_admin(client)
+        status = client.get('/gateway/status').json()
+        checks = {check['id']: check for check in status['readiness']['checks']}
+        assert checks['credentials']['ok']
+        assert not checks['spreadsheet']['ok']
+        assert '.env' in checks['spreadsheet']['detail']
+        assert checks['sync']['ok']
+        assert not checks['phone']['ok']
+        assert checks['phone']['action']['href'] == '#pair-button'
 
 
 def test_pairing_generates_trusted_certificate_without_google_access(tmp_path):

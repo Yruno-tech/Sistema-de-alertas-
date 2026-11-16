@@ -3,7 +3,7 @@
   const form = $('send-form'), button = $('send-now'), feedback = $('send-feedback');
   const labels = {DRAFT:'Preparado',QUEUED:'En cola',CLAIMED:'Reservado',STARTED:'Enviando',SENT:'Enviado',
     DELIVERED:'Entregado',FAILED:'Fallido',UNKNOWN:'Desconocido',CANCELLED:'Cancelado',STOPPED:'Detenido',COMPLETE:'Finalizado',EXPIRED:'Vencido'};
-  let preview = null, connected = false, quoting = false, quoteNumber = 0, timer, pending = null, sending = false;
+  let preview = null, connected = false, preflightReady = false, quoting = false, quoteNumber = 0, timer, pending = null, sending = false;
   try { pending = JSON.parse(sessionStorage.getItem('gateway-pending') || 'null'); } catch (_) {}
   const values = () => Object.fromEntries(new FormData(form));
   const csrf = () => form.elements.csrf_token.value;
@@ -11,7 +11,7 @@
     for (const input of form.querySelectorAll('select,input:not([type=hidden]),textarea')) input.disabled = locked;
   }
   function updateButton() {
-    button.disabled = sending || (!pending && (quoting || !connected || !preview || !preview.count));
+    button.disabled = sending || !preflightReady || (!pending && (quoting || !connected || !preview || !preview.count));
     button.textContent = pending ? 'Reintentar la misma solicitud' : preview && preview.count ? `Enviar ahora a ${preview.count} personas` : 'Enviar ahora';
   }
   function clearPending() { pending = null; sessionStorage.removeItem('gateway-pending'); controls(false); }
@@ -115,6 +115,28 @@
       const sync=data.last_sync;
       $('sync-state').textContent=sync ? `Última sincronización: ${new Date(sync.completed_at).toLocaleString()} · ${sync.accepted} registros válidos`+
         (sync.status==='failed'?' · No se pudo actualizar: revisá Destinatarios.':sync.rejected?` · ${sync.rejected} filas inválidas excluidas`:'') : 'La sincronización inicial está pendiente';
+      preflightReady=Boolean(data.readiness && data.readiness.ready);
+      const readiness=data.readiness;
+      $('readiness-summary').textContent=preflightReady
+        ? 'Todo está listo. Revisá destinatarios y mensaje antes de autorizar el envío.'
+        : 'Corregí los puntos marcados antes de enviar SMS.';
+      $('readiness-panel').classList.toggle('success',preflightReady);
+      $('readiness-panel').classList.toggle('error',Boolean(readiness && !preflightReady));
+      $('readiness-checks').replaceChildren(...(readiness?.checks || []).map(check=>{
+        const li=document.createElement('li');
+        const icon=document.createElement('strong');
+        icon.textContent=check.ok?'✓ ':'✗ ';
+        li.append(icon,document.createTextNode(`${check.label}: ${check.detail}`));
+        if(check.action) {
+          li.append(document.createTextNode(' '));
+          const link=document.createElement('a');
+          link.href=check.action.href;
+          link.textContent=check.action.label;
+          if(check.id==='phone') link.addEventListener('click',()=>{$('pair-panel').hidden=false;});
+          li.append(link);
+        }
+        return li;
+      }));
       if (pending && data.batches.some(b=>b.id===pending.request_id)) { completed(pending.request_id); return; }
       for(const batch of data.batches) {
         const counts=document.querySelector(`[data-counts="${batch.id}"]`);
@@ -126,7 +148,12 @@
         }
       }
       if(!quoting) await quote();
-    } catch(_) { connected=false;$('phone-state').textContent='Sin conexión con el programa de la PC'; }
+    } catch(_) {
+      connected=false;preflightReady=false;
+      $('phone-state').textContent='Sin conexión con el programa de la PC';
+      $('readiness-summary').textContent='No se pudieron verificar los requisitos. Esperá e intentá nuevamente.';
+      $('readiness-panel').classList.add('error');
+    }
     finally {updateButton();setTimeout(refresh,3000);}
   }
   refresh();

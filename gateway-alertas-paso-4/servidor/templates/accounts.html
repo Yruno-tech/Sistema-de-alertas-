@@ -34,5 +34,21 @@
       {% endfor %}</tbody>
     </table>
   </div>
+  <h2>Credenciales de Google Sheets</h2>
+  <p>{% if credential_configured %}
+    Ya hay un archivo de cuenta de servicio configurado. Importar otro lo reemplazará.
+    {% else %}
+    Todavía no hay una clave de cuenta de servicio configurada.
+    {% endif %}
+    El servidor solo la guarda en su carpeta local protegida contra Git; nunca se envía al celular ni se muestra en pantalla.
+  </p>
+  {% if credential_error %}<p class="error" role="alert">{{ credential_error }}</p>{% endif %}
+  {% if credential_success %}<p class="success" role="status">{{ credential_success }}</p>{% endif %}
+  <form method="post" action="/accounts/service-account" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ operator.csrf_token }}">
+    <label for="credential-file">Archivo JSON de la cuenta de servicio</label>
+    <input id="credential-file" name="credential_file" type="file" accept=".json,application/json" required>
+    <button type="submit">Importar credenciales</button>
+  </form>
 </section>
 {% endblock %}

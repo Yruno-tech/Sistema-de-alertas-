@@ -5,6 +5,11 @@
   <p class="eyebrow">SMS DESDE LA PC · MODO PRUEBA</p><h1>Enviar un aviso</h1>
   <div class="gateway-status"><strong id="phone-state">Comprobando celular…</strong> · <span id="sim-state">{{ control.sim_label }}</span></div>
   <p id="sync-state">Comprobando destinatarios…</p>
+  <section id="readiness-panel" class="notice" aria-live="polite">
+    <h2>Comprobaciones antes de enviar</h2>
+    <p id="readiness-summary">Verificando configuración, planilla y celular…</p>
+    <ul id="readiness-checks"></ul>
+  </section>
   <div class="actions"><button id="pair-button" type="button" class="button-secondary">Conectar celular (QR)</button>
     <a href="/recipients">Ver destinatarios</a></div>
   <section id="pair-panel" hidden aria-label="Emparejar celular">
